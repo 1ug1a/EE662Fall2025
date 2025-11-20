@@ -3,25 +3,39 @@ BROADCAST_NET_ADDR = 255
 BROADCAST_NODE_ADDR = 255
 
 
-
 ## node properties
-NODE_TX_RANGE = 100  # transmission range of nodes
-NODE_ARRIVAL_MAX = 200  # max time to wake up
-
+NODE_TX_STATIC = True
+NODE_TX_BASE_RANGE = 100  # base transmission range of nodes
+NODE_TX_POWER_MULTS = [1.58, 1.41, 1.26, 1.12, 1.00, 0.89, 0.79, 0.71, 0.63]
+NODE_TX_POWER_PROBS = [0.01, 0.03, 0.10, 0.22, 0.28, 0.22, 0.10, 0.03, 0.01]
+NODE_ARRIVAL_MAX = 300  # max time to wake up
 
 ## simulation properties
-SIM_NODE_COUNT = 100  # noce count in simulation
-SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
-SIM_DURATION = 5000  # simulation Duration in seconds
-SIM_TIME_SCALE = 0.00001  #  The real time dureation of 1 second simualtion time
-SIM_TERRAIN_SIZE = (1400, 1400)  #terrain size
-SIM_TITLE = 'Data Collection Tree'  # title of visualization window
 SIM_VISUALIZATION = True  # visualization active
-SCALE = 1  # scale factor for visualization
+SIM_TITLE = 'Cluster-Mesh Network'  # title of visualization window
+SIM_TERRAIN_SIZE = (850, 800)  #terrain size
+#SIM_TERRAIN_SIZE = (550, 500)  #terrain size
+SIM_SCALE = 1  # scale factor for visualization
+#SIM_RANDOM_SEED = 125  # loop occurs on SIM_ROUTER_MODE = False
+SIM_RANDOM_SEED = 125
+SIM_NODE_COUNT = 100  # node count in simulation
+SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
+SIM_DURATION = 410  # simulation duration in seconds
+SIM_DURATION = 400
+SIM_TIME_SCALE = 0.01  #  The real time duration of 1 second simualtion time
+SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
+## other network/sim properties
+SIM_MAX_CLUSTER_SIZE = None  # max number of nodes in one cluster
+SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes
+SIM_PACKET_LOSS_RATE = 0  # self-explanatory. currently doesn't work great with it active
+SIM_NEIGHBOR_TABLE_HOPS = 4
+SIM_ENERGY_LOSS = False
+SIM_ROUTING_LOGS = True
+SIM_ROUTER_MODE = False
 
 ## application properties
-HEARTH_BEAT_TIME_INTERVAL = 100
+HEARTBEAT_INTERVAL = 100
 REPAIRING_METHOD = 'FIND_ANOTHER_PARENT' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
 EXPORT_CH_CSV_INTERVAL = 10  # simulation time units;
 EXPORT_NEIGHBOR_CSV_INTERVAL = 10  # simulation time units;

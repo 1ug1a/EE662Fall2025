@@ -92,7 +92,7 @@ class Parameters:
       self.scale      = 1.0
       self.nodesize   = 10
       self.textsize   = 12
-      self.hollow     = True
+      self.hollow     = False
       self.double     = False
       self.nodewidth  = 1
       self.grid       = 0

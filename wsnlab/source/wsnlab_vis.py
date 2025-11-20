@@ -114,6 +114,25 @@ class Node(wsnlab.Node):
         if self.parent_gui is not None:
             self.scene.dellink(self.parent_gui, self.id, "parent")
 
+    def draw_mesh_link(self, dst_id):
+        """Draws a mesh link between this node and given destination address.
+
+        Args:
+            dst_id (int): Destination node ID.
+        Returns:
+        """
+        self.scene.addlink(self.id, dst_id, "mesh_link")
+
+    def erase_mesh_link(self, dst_id):
+        """Erases a mesh link between this node and given destination address.
+
+        Args:
+            dst_id (int): Destination node ID.
+        Returns:
+        """
+        if dst_id is not None:
+            self.scene.dellink(self.id, dst_id, "mesh_link")
+
 
 ###########################################################
 class _FakeScene:
@@ -156,11 +175,12 @@ class Simulator(wsnlab.Simulator):
         self.terrain_size = terrain_size
         if self.visual:
             self.scene = Scene(realtime=True)
-            self.scene.linestyle("wsnsimpy:tx", color=(0, 0, 1), dash=(5, 5))
+            self.scene.linestyle("wsnsimpy:tx", color=(0.7, 0.7, 0.7), dash=(5, 5))
             self.scene.linestyle("wsnsimpy:ack", color=(0, 1, 1), dash=(5, 5))
             self.scene.linestyle("wsnsimpy:unicast", color=(0, 0, 1), width=3, arrow='head')
             self.scene.linestyle("wsnsimpy:collision", color=(1, 0, 0), width=3)
-            self.scene.linestyle("parent", color=(0,.8,0), arrow="tail", width=2)
+            self.scene.linestyle("parent", color=(0.1,0.1,0.1), arrow="tail", width=2)
+            self.scene.linestyle("mesh_link", color=(0.5,0.5,0.5), dash=(2,4))
             if title is None:
                 title = "WsnSimPy"
             self.tkplot = Plotter(windowTitle=title, terrain_size=terrain_size)

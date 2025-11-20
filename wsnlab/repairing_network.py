@@ -128,7 +128,7 @@ class SensorNode(wsn.Node):
         parent_dead = False
         will_be_removed = []
         for gui, pck in self.neighbors_table.items():
-            if self.now - pck['arrival_time'] > 3 * config.HEARTH_BEAT_TIME_INTERVAL:
+            if self.now - pck['arrival_time'] > 3 * config.HEARTBEAT_INTERVAL:
                 will_be_removed.append(gui)
                 if gui == self.parent_gui:
                     parent_dead = True
@@ -144,7 +144,7 @@ class SensorNode(wsn.Node):
                 self.repair()
             else:
                 self.send_heart_beat()
-                self.set_timer('TIMER_HEART_BEAT', config.HEARTH_BEAT_TIME_INTERVAL)
+                self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
                 if childs_updated:
                     if self.role != Roles.ROOT:
                         self.send_network_update()
@@ -457,7 +457,7 @@ class SensorNode(wsn.Node):
                     self.draw_parent()
                     self.kill_timer('TIMER_JOIN_REQUEST')
                     self.send_heart_beat()
-                    self.set_timer('TIMER_HEART_BEAT', config.HEARTH_BEAT_TIME_INTERVAL)
+                    self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
                     self.send_join_ack(pck['source'])
                     if self.ch_addr is not None:  # if it is in repairing phase
                         self.role = Roles.CLUSTER_HEAD
@@ -499,7 +499,7 @@ class SensorNode(wsn.Node):
                     self.ch_addr = wsn.Addr(self.id, 254)
                     self.root_addr = self.addr
                     self.hop_count = 0
-                    self.set_timer('TIMER_HEART_BEAT', config.HEARTH_BEAT_TIME_INTERVAL)
+                    self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
                 else:  # otherwise it keeps trying to sends probe after a long time
                     self.c_probe = 0
                     self.set_timer('TIMER_PROBE', 30)
@@ -554,7 +554,7 @@ def create_network(node_class, number_of_nodes=100):
         px = 50 + x * config.SIM_NODE_PLACING_CELL_SIZE + random.uniform(-1 * config.SIM_NODE_PLACING_CELL_SIZE / 3, config.SIM_NODE_PLACING_CELL_SIZE / 3)
         py = 50 + y * config.SIM_NODE_PLACING_CELL_SIZE + random.uniform(-1 * config.SIM_NODE_PLACING_CELL_SIZE / 3, config.SIM_NODE_PLACING_CELL_SIZE / 3)
         node = sim.add_node(node_class, (px, py))
-        node.tx_range = config.NODE_TX_RANGE
+        node.tx_range = config.NODE_TX_BASE_RANGE
         node.logging = True
         node.arrival = random.uniform(0, config.NODE_ARRIVAL_MAX)
         if node.id == ROOT_ID:

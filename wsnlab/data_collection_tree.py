@@ -194,6 +194,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
+        self.log('Sending JOIN_REQUEST to %s' % str(dest))
         self.send({'dest': dest, 'type': 'JOIN_REQUEST', 'gui': self.id})
 
     ###################
@@ -208,6 +209,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
+        self.log('Sending JOIN_REPLY to GUI %s with addr %s' % (str(gui), str(addr)))
         self.send({'dest': wsn.BROADCAST_ADDR, 'type': 'JOIN_REPLY', 'source': self.ch_addr,
                    'gui': self.id, 'dest_gui': gui, 'addr': addr, 'root_addr': self.root_addr,
                    'hop_count': self.hop_count+1})
@@ -349,6 +351,7 @@ class SensorNode(wsn.Node):
 
         elif self.role == Roles.UNDISCOVERED:  # if the node is undiscovered
             if pck['type'] == 'HEART_BEAT':  # it kills probe timer, becomes unregistered and sets join request timer once received heart beat
+                self.log("✅ Discovered by neighbor GUI %s." % str(pck['gui']))
                 self.update_neighbor(pck)
                 self.kill_timer('TIMER_PROBE')
                 self.become_unregistered()
@@ -365,7 +368,7 @@ class SensorNode(wsn.Node):
                     self.draw_parent()
                     self.kill_timer('TIMER_JOIN_REQUEST')
                     self.send_heart_beat()
-                    self.set_timer('TIMER_HEART_BEAT', config.HEARTH_BEAT_TIME_INTERVAL)
+                    self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
                     self.send_join_ack(pck['source'])
                     if self.ch_addr is not None: # it could be a cluster head which lost its parent
                         self.set_role(Roles.CLUSTER_HEAD)
@@ -406,14 +409,14 @@ class SensorNode(wsn.Node):
                     self.ch_addr = wsn.Addr(self.id, 254)
                     self.root_addr = self.addr
                     self.hop_count = 0
-                    self.set_timer('TIMER_HEART_BEAT', config.HEARTH_BEAT_TIME_INTERVAL)
+                    self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
                 else:  # otherwise it keeps trying to sending probe after a long time
                     self.c_probe = 0
                     self.set_timer('TIMER_PROBE', 30)
 
         elif name == 'TIMER_HEART_BEAT':  # it sends heart beat message once heart beat timer fired
             self.send_heart_beat()
-            self.set_timer('TIMER_HEART_BEAT', config.HEARTH_BEAT_TIME_INTERVAL)
+            self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
             #print(self.id)
 
         elif name == 'TIMER_JOIN_REQUEST':  # if it has not received heart beat messages before, it sets timer again and wait heart beat messages once join request timer fired.
@@ -570,11 +573,11 @@ def create_network(node_class, number_of_nodes=100):
     for i in range(number_of_nodes):
         x = i / edge
         y = i % edge
-        px = 300 + config.SCALE*x * config.SIM_NODE_PLACING_CELL_SIZE + random.uniform(-1 * config.SIM_NODE_PLACING_CELL_SIZE / 3, config.SIM_NODE_PLACING_CELL_SIZE / 3)
-        py = 200 + config.SCALE* y * config.SIM_NODE_PLACING_CELL_SIZE + random.uniform(-1 * config.SIM_NODE_PLACING_CELL_SIZE / 3, config.SIM_NODE_PLACING_CELL_SIZE / 3)
+        px = 300 + config.SIM_SCALE*x * config.SIM_NODE_PLACING_CELL_SIZE + random.uniform(-1 * config.SIM_NODE_PLACING_CELL_SIZE / 3, config.SIM_NODE_PLACING_CELL_SIZE / 3)
+        py = 200 + config.SIM_SCALE* y * config.SIM_NODE_PLACING_CELL_SIZE + random.uniform(-1 * config.SIM_NODE_PLACING_CELL_SIZE / 3, config.SIM_NODE_PLACING_CELL_SIZE / 3)
         node = sim.add_node(node_class, (px, py))
         NODE_POS[node.id] = (px, py)   # <— add this line
-        node.tx_range = config.NODE_TX_RANGE * config.SCALE
+        node.tx_range = config.NODE_TX_BASE_RANGE * config.SIM_SCALE
         node.logging = True
         node.arrival = random.uniform(0, config.NODE_ARRIVAL_MAX)
         if node.id == ROOT_ID:
