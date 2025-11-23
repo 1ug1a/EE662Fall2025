@@ -11,7 +11,7 @@ from pprint import pprint
 from source import wsnlab_vis as wsn
 from source import config
 
-Roles = Enum('Roles', 'UNDISCOVERED UNREGISTERED ROOT REGISTERED CLUSTER_HEAD ROUTER')
+Roles = Enum('Roles', 'OFF UNDISCOVERED UNREGISTERED ROOT REGISTERED CLUSTER_HEAD ROUTER')
 """Enumeration of roles"""
 
 RNG = random.Random(config.SIM_RANDOM_SEED)
@@ -183,7 +183,7 @@ class SensorNode(wsn.Node):
                 #self.log("🐞 [Node %s]: Descendants: %s" % (self.id, list(self.descendants.keys())))
                 if self.id == ROOT_ID:
                     #pprint(ADDR_NODE_KEY)
-                    pprint(ROLE_COUNTS)
+                    #pprint(ROLE_COUNTS)
                     pass
                 self.set_timer('TIMER_DEBUG', 100)
 
@@ -199,7 +199,9 @@ class SensorNode(wsn.Node):
         self.role = new_role
 
         if recolor:
-            if new_role == Roles.UNDISCOVERED:
+            if new_role == Roles.OFF:
+                self.scene.nodecolor(self.id, 0.70, 0.70, 0.70)
+            elif new_role == Roles.UNDISCOVERED:
                 self.scene.nodecolor(self.id, 0.80, 0.31, 0.24) # red
             elif new_role == Roles.UNREGISTERED:
                 self.scene.nodecolor(self.id, 0.91, 0.59, 0.18) # yellow
@@ -207,12 +209,12 @@ class SensorNode(wsn.Node):
                 self.scene.nodecolor(self.id, 0.06, 0.52, 0.33) # green
                 # self.draw_tx_range()
             elif new_role == Roles.ROUTER:
-                self.scene.nodecolor(self.id, 0.00, 0.00, 0.00)
+                self.scene.nodecolor(self.id, 0.62, 0.17, 0.92) # purple
             elif new_role == Roles.CLUSTER_HEAD:
                 self.scene.nodecolor(self.id, 0.11, 0.21, 0.89) # blue
                 self.draw_tx_range()
             elif new_role == Roles.ROOT:
-                self.scene.nodecolor(self.id, 0.62, 0.17, 0.92) # purple
+                self.scene.nodecolor(self.id, 0.00, 0.00, 0.00)
                 self.draw_tx_range()
                 self.set_timer('TIMER_EXPORT_CH_CSV', config.EXPORT_CH_CSV_INTERVAL)
                 self.set_timer('TIMER_EXPORT_NEIGHBOR_CSV', config.EXPORT_NEIGHBOR_CSV_INTERVAL)
@@ -313,7 +315,7 @@ class SensorNode(wsn.Node):
             'root_addr': self.root_addr,
             'hops_to_root': self.hops_to_root+1
         })
-        pass
+        self.lose_energy()
 
     def send_join_ack(self, dest):
         """Sending join acknowledgement message to given destination address. (1-hop)
@@ -347,7 +349,6 @@ class SensorNode(wsn.Node):
             'source': self.addr,
             'ttl': 101
         })
-        self.lose_energy()
 
     def send_network_response(self, dest, addr):
         """Sending network reply message to dest address to be cluster head with a new adress
@@ -368,7 +369,6 @@ class SensorNode(wsn.Node):
             'addr': addr,
             'ttl': 101
         })
-        self.lose_energy()
 
     def send_network_update(self):
         """Sending network update message to parent (1-hop)
@@ -443,7 +443,6 @@ class SensorNode(wsn.Node):
             'payload': data_payload,
             'ttl': 101,
         })
-        self.lose_energy()
 
     ###################
     #    Receives     #
@@ -491,7 +490,7 @@ class SensorNode(wsn.Node):
                     if self.id in temp_neighbors:
                         temp_neighbors.pop(self.id)
                     for gui, pck in temp_neighbors.items():
-                        if gui not in self.neighbors:
+                        if gui not in self.neighbors or pck['hops_away'] < self.neighbors[gui]['hops_away']:
                             self.neighbors[gui] = pck
                 case 'JOIN_REQUEST':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
@@ -515,6 +514,8 @@ class SensorNode(wsn.Node):
                         else:
                             self.log("➖ %s: Node %s already in join request senders. Ignoring." % (str(self.addr), str(pck['gui'])))
                             pass
+                    elif self.role == Roles.ROUTER:
+                        self.send_join_response(pck['gui'], 'REJECT')
                 case 'JOIN_RESPONSE':
                     if self.role == Roles.UNREGISTERED:
                         if pck['dest_gui'] == self.id:
@@ -538,6 +539,9 @@ class SensorNode(wsn.Node):
                 case 'JOIN_ACK':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
                         self.members[pck['gui']] = pck
+                        self.log(self.join_request_senders)
+                        if self.join_request_senders.get(pck['gui']):
+                            self.join_request_senders.pop(pck['gui'])
                         USED_ADDRS.append(pck['source'])
                         ADDR_NODE_KEY[(pck['source'].net_addr, pck['source'].node_addr)] = pck['gui']
                         self.log('🤝 [Network]: Node %s joined as member with address %s' % (str(pck['gui']), str(pck['source'])))
@@ -571,7 +575,6 @@ class SensorNode(wsn.Node):
                                     self.node_vacancies[chosen_node_addr] = True
                                 else:
                                     self.send_join_response(gui, 'REJECT')
-                            self.join_request_senders = {}
                 case 'NETWORK_UPDATE':
                     match self.role:
                         case Roles.ROOT:
@@ -636,12 +639,11 @@ class SensorNode(wsn.Node):
 
     def lose_energy(self):
         if config.SIM_ENERGY_LOSS:
-            self.energy_J -= 1000 # large value for demonstration
+            self.energy_J -= 300 # large value for demonstration
             if self.energy_J < 0.10 * 21600:
                 self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
-                self.set_role(Roles.UNREGISTERED)
                 self.clear_data()
-                self.scene.nodecolor(self.id, 0.94, 0.94, 0.94)
+                self.set_role(Roles.OFF)
                 self.sleep()
 
     def select_and_join(self):
@@ -700,54 +702,66 @@ class SensorNode(wsn.Node):
                 log_string = "🚛 %s: Next hop: descendant %s" % (str(self.addr), str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
                 pck['next_hop'] = self.neighbors[child_gui]['addr']
         # add mesh routing using neighbor tables. overrides tree routing (what to do with routers....)
-        if self.role not in []:
-            # start by collecting all neighbor addresses (only if the neighbor has an addr or ch_addr)
-            temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None}
-            temp_neighbors_inverted.update({(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
-            if self.poisoned_addr is not None:
+        # start by collecting all neighbor addresses (only if the neighbor has an addr or ch_addr)
+        temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None}
+        temp_neighbors_inverted.update({(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
+        #self.log("Poisoned address: %s" % str(self.poisoned_addr))
+        
+        if self.poisoned_addr is not None:
+            # this restriction is here because frequently-used gateways get poisoned the most
+            if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
                 temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
-            #self.log("🧭 %s: Inverted neighbor table: %s" % (str(self.addr), dict(temp_neighbors_inverted)))
-            # check for destination cluster in neighbor addresses
-            #self.log(self.neighbors)
-            dest_net_addr = pck['dest'].net_addr
-            dest_node_addr = pck['dest'].node_addr
-            # if we find the cluster in neighbor address...
-            if dest_net_addr in [addr[0] for addr in temp_neighbors_inverted.keys()]:
-                neighbor_net_addr = dest_net_addr
-                node_addr_candidates = [addr[1] for addr in temp_neighbors_inverted.keys() if addr[0] == neighbor_net_addr]
-                #self.log(list(node_addr_candidates))
-                # if destination is directly a neighbor node...
-                if dest_node_addr in node_addr_candidates:
-                    # make note of the address to use
-                    neighbor_node_addr = dest_node_addr
-                # if you have the destination's clusterhead that's good too
-                elif 254 in node_addr_candidates:
-                    neighbor_node_addr = 254
-                # otherwise choose the candidate with the least hops away
-                else:
-                    hops_away_table = {}
-                    for node in node_addr_candidates:
-                        gui = temp_neighbors_inverted[(dest_net_addr, node)]
-                        hops_away_table[node] = self.neighbors[gui]['hops_away']
-                    #self.log(hops_away_table)
-                    neighbor_node_addr = min(hops_away_table, key=hops_away_table.get)
-                '''for addr in temp_neighbors_inverted.keys():
-                    if addr[0] == neighbor_net_addr:
-                        # okay yeah what we need is to gather the possibilities and make a decision
-                        # the biggest thing, i think, is that it doesn't try to reduce hops_away
-                        node_addr_candidates.append(addr[1])
-                        neighbor_node_addr = addr[1]
-                        if neighbor_node_addr == dest_node_addr:
-                            break
-                        elif neighbor_node_addr == 254:
-                            break'''
-                neighbor_addr = wsn.Addr(neighbor_net_addr, neighbor_node_addr)
-                neighbor_id = temp_neighbors_inverted[(neighbor_net_addr, neighbor_node_addr)]
-                #one_hop_neighbor_info = self.neighbors[neighbor_id]
-                #self.log(one_hop_neighbor_info)
-                one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
-                pck['next_hop'] = one_hop_neighbor_addr
-                log_string = "🚛 %s: Next hop: 1-hop neighbor %s, towards neighbor %s" % (str(self.addr), str(one_hop_neighbor_addr), str(neighbor_addr))
+        # remove non-leaf nodes
+        if self.role == Roles.ROUTER:
+            temp_neighbors_inverted_keys = list(temp_neighbors_inverted.keys())
+            for neighbor_tuple in temp_neighbors_inverted_keys:
+                if self.neighbors[temp_neighbors_inverted[neighbor_tuple]]['role'] == Roles.REGISTERED:
+                    temp_neighbors_inverted.pop(neighbor_tuple)
+        #self.log("🧭 %s: Inverted neighbor table: %s" % (str(self.addr), dict(temp_neighbors_inverted)))
+        # check for destination cluster in neighbor addresses
+        #self.log([(gui, neighbor['source'], neighbor['hops_away'], neighbor['next_hop']) for gui, neighbor in self.neighbors.items()])
+        dest_net_addr = pck['dest'].net_addr
+        dest_node_addr = pck['dest'].node_addr
+        # if we find the cluster in neighbor address...
+        if dest_net_addr in [addr[0] for addr in temp_neighbors_inverted.keys()]:
+            neighbor_net_addr = dest_net_addr
+            node_addr_candidates = [addr[1] for addr in temp_neighbors_inverted.keys() if addr[0] == neighbor_net_addr]
+            #self.log(list(node_addr_candidates))
+            # if destination is directly a neighbor node...
+            if dest_node_addr in node_addr_candidates:
+                # make note of the address to use
+                #self.log("Found exact match.")
+                neighbor_node_addr = dest_node_addr
+            # if you have the destination's clusterhead that's good too
+            elif 254 in node_addr_candidates:
+                #self.log("Found clusterhead of destination.")
+                neighbor_node_addr = 254
+            # otherwise choose the candidate with the least hops away
+            else:
+                #self.log("Choosing closest neighbor.")
+                hops_away_table = {}
+                for node in node_addr_candidates:
+                    gui = temp_neighbors_inverted[(dest_net_addr, node)]
+                    hops_away_table[node] = self.neighbors[gui]['hops_away']
+                #self.log(hops_away_table)
+                neighbor_node_addr = min(hops_away_table, key=hops_away_table.get)
+            '''for addr in temp_neighbors_inverted.keys():
+                if addr[0] == neighbor_net_addr:
+                    # okay yeah what we need is to gather the possibilities and make a decision
+                    # the biggest thing, i think, is that it doesn't try to reduce hops_away
+                    node_addr_candidates.append(addr[1])
+                    neighbor_node_addr = addr[1]
+                    if neighbor_node_addr == dest_node_addr:
+                        break
+                    elif neighbor_node_addr == 254:
+                        break'''
+            neighbor_addr = wsn.Addr(neighbor_net_addr, neighbor_node_addr)
+            neighbor_id = temp_neighbors_inverted[(neighbor_net_addr, neighbor_node_addr)]
+            #one_hop_neighbor_info = self.neighbors[neighbor_id]
+            #self.log(one_hop_neighbor_info)
+            one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
+            pck['next_hop'] = one_hop_neighbor_addr
+            log_string = "🚛 %s: Next hop: 1-hop neighbor %s, towards neighbor %s" % (str(self.addr), str(one_hop_neighbor_addr), str(neighbor_addr))
                 
         if pck['next_hop'] is not None:
             self.poisoned_addr = pck['next_hop']
@@ -758,6 +772,7 @@ class SensorNode(wsn.Node):
                 self.log("⛔ %s: %s has expired. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
                 return
             self.send(pck)
+            self.lose_energy()
         else:
             self.log("⛔ %s: %s could not be routed. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
 
