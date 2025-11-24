@@ -30,6 +30,7 @@ class Node(wsnlab.Node):
         super().__init__(sim, id, pos)
         self.scene = self.sim.scene
         self.scene.node(id, *pos)
+        self.tx_id = None
 
     ###################
     def send(self, pck):
@@ -73,10 +74,12 @@ class Node(wsnlab.Node):
            Returns:
 
         """
-        obj_id =self.scene.circle(self.pos[0], self.pos[1], self.tx_range, line="wsnsimpy:tx")
+        self.tx_id =self.scene.circle(self.pos[0], self.pos[1], self.tx_range, line="wsnsimpy:tx")
         #self.delayed_exec(0.2, self.scene.delshape, obj_id)
 
-
+    def erase_tx_range(self):
+        if self.tx_id is not None:
+            self.scene.delshape(self.tx_id)
 
     def move(self, x, y):
         """Visualise move process in addition to base move method.

@@ -38,7 +38,9 @@ class SensorNode(wsn.Node):
         th_probe (int): probe message threshold
     """
 
-    ###################
+    ##################
+    # Initialization #
+    ##################
     def init(self):
         """Initialization of node. Setting all attributes of node.
         At the beginning node needs to be sleeping and its role should be UNDISCOVERED.
@@ -64,6 +66,8 @@ class SensorNode(wsn.Node):
         self.hops_to_root = 99999
 
         # tables and trackers
+        self.activation_time = None
+        self.join_time = None
         self.energy_J = 21600
         self.poisoned_addr = None
         
@@ -84,26 +88,6 @@ class SensorNode(wsn.Node):
 
         self.sleep()
 
-    def clear_data(self):
-        self.erase_parent()
-
-        self.addr = None
-        self.ch_addr = None
-        self.parent_gui = None
-        self.root_addr = None
-
-        self.hops_to_root = 99999
-
-        self.probe_counter = 0
-        self.probe_threshold = 5
-
-        self.neighbors = {}
-        self.candidate_parents = {}
-        self.join_request_senders = {}
-        self.members = {} # CH only
-        self.descendants = {} # aka "child net table". CH only
-
-    ###################
     def run(self):
         """Setting the arrival timer to wake up after firing.
 
@@ -114,7 +98,249 @@ class SensorNode(wsn.Node):
         """
         self.set_timer('TIMER_ACTIVATE', self.arrival)
 
-    ###################
+        if self.id != ROOT_ID:
+            if RNG.random() < 0.15:
+                self.set_timer('TIMER_DIE', 500)
+
+    ###########
+    # Packets #
+    ###########
+    def send_probe(self):
+        """Sends a probe message to all neighbors. (1-hop)
+
+        Args:
+
+        Returns:
+
+        """
+        #self.log("🔎 Sending PROBE.")
+        self.send({
+            'dest': wsn.BROADCAST_ADDR,
+            'type': 'PROBE',
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_heartbeat(self):
+        """Sends a heartbeat message to announce node's presence to neighbors. (1-hop)
+
+        Args:
+
+        Returns:
+
+        """
+        #self.log("💕 %s: Sent HEARTBEAT." % (self.ch_addr if self.ch_addr is not None else self.addr))
+        self.send({
+            'dest': wsn.BROADCAST_ADDR,
+            'type': 'HEARTBEAT',
+            'source': self.ch_addr if self.ch_addr is not None else self.addr,
+            'gui': self.id,
+            'role': self.role,
+            'addr': self.addr,
+            'ch_addr': self.ch_addr,
+            'hops_to_root': self.hops_to_root,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_join_request(self, dest):
+        """Sends a join request to the destination address to join the network. (1-hop)
+
+        Args:
+            dest (Addr): Address of destination node
+        Returns:
+
+        """
+        self.log('💬 [Node %s]: Sent JOIN_REQUEST to %s' % (self.id, str(dest)))
+        self.send({
+            'dest': dest,
+            'type': 'JOIN_REQUEST',
+            'gui': self.id,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_join_response(self, dest, resp, addr=wsn.Addr(0,0)):
+        """Sends a join reply message to register the node that requested to join after being promoted to clusterhead.
+        The message includes a gui to determine which node will take this reply, an addr to be assigned to the node,
+        and a root_addr. (1-hop)
+
+        Args:
+            dest (int): GUI of destination node
+            resp (string): 'ACCEPT' or 'REJECT'
+            addr (Addr): Address that will be assigned to new registered node
+        Returns:
+
+        """
+        if resp == 'ACCEPT':
+            self.log('💬 %s: Sent JOIN_RESPONSE (%s) to Node %s, address assigned %s' % (str(self.ch_addr), resp, str(dest), str(addr)))
+        else:
+            self.log('💬 %s: Sent JOIN_RESPONSE (%s) to Node %s' % (str(self.ch_addr), resp, str(dest)))
+        self.send({
+            'dest': wsn.BROADCAST_ADDR,
+            'type': 'JOIN_RESPONSE',
+            'source': self.ch_addr,
+            'gui': self.id,
+            'dest_gui': dest,
+            'response': resp,
+            'addr': addr,
+            'root_addr': self.root_addr,
+            'hops_to_root': self.hops_to_root+1,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_join_ack(self, dest):
+        """Sending join acknowledgement message to given destination address. (1-hop)
+
+        Args:
+            dest (Addr): Address of destination node
+        Returns:
+
+        """
+        self.log('💬 %s: Sending JOIN_ACK to %s' % (str(self.addr), str(dest)))
+        self.send({
+            'dest': dest,
+            'type': 'JOIN_ACK',
+            'source': self.addr,
+            'gui': self.id,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def share_neighbors(self):
+        """Sends a node's neighbors to broadcast address.
+
+        Args:
+
+        Returns:
+
+        """
+        temp_neighbors = {}
+        for gui, pck in self.neighbors.items():
+            if gui == self.id:
+                break
+            temp_pck = dict(pck)
+            if temp_pck['hops_away'] < config.SIM_NEIGHBOR_TABLE_HOPS:
+                temp_pck['hops_away'] += 1
+                temp_pck['next_hop'] = self.addr
+                temp_neighbors[gui] = temp_pck
+        #self.log("📝 %s: Sharing neighbors: %s" % (self.addr, list(temp_neighbors)))
+        self.send({
+            'dest': wsn.BROADCAST_ADDR,
+            'type': 'NEIGHBOR_SHARE',
+            'source': self.addr,
+            'gui': self.id,
+            'neighbors': temp_neighbors,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_nomination(self, dest, addr):
+        self.log("✨ %s: Sent NOMINATION to Node %s, address assigned %s" % (str(self.addr), str(dest), str(addr)))
+        self.send({
+            'dest': wsn.BROADCAST_ADDR,
+            'type': 'NOMINATION',
+            'source': self.addr,
+            'gui': self.id,
+            'dest_gui': dest,
+            'addr': addr,
+            'root_addr': self.root_addr,
+            'hops_to_root': self.hops_to_root+1,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_network_request(self, dest):
+        """Sends a network request message to given destination address. (Multi-hop)
+
+        Args:
+            dest (Addr): Address of destination node
+        Returns:
+
+        """
+        self.log("📡 %s: Finished collection. Sending NETWORK_REQUEST to destination %s" % (str(self.addr), str(dest)))
+        self.route_and_forward({
+            'dest': dest,
+            'type': 'NETWORK_REQUEST',
+            'source': self.addr,
+            'ttl': config.SIM_TTL,
+            'created': self.now
+        })
+
+    def send_network_response(self, dest, addr):
+        """Sending network reply message to dest address to be cluster head with a new adress
+
+        Args:
+            dest (Addr): destination address
+            source (Addr): source address
+            addr (Addr): cluster head address of new network
+
+        Returns:
+
+        """
+        self.log("📡 %s: Sending NETWORK_RESPONSE to %s with CH address %s" % (str(self.addr), str(dest), str(addr)))
+        self.route_and_forward({
+            'dest': dest,
+            'type': 'NETWORK_RESPONSE',
+            'source': self.addr,
+            'addr': addr,
+            'ttl': config.SIM_TTL,
+            'created': self.now
+        })
+
+    def send_network_update(self):
+        """Sending network update message to parent (1-hop)
+
+        Args:
+
+        Returns:
+
+        """
+        temp_descendants = []
+        if self.ch_addr is not None:
+            temp_descendants = [self.ch_addr.net_addr]
+        for networks in self.descendants.values():
+            temp_descendants.extend(networks)
+        
+        if self.neighbors[self.parent_gui]['ch_addr'] is not None:
+            addr = self.neighbors[self.parent_gui]['ch_addr']
+        elif self.neighbors[self.parent_gui]['addr'] is not None:
+            addr = self.neighbors[self.parent_gui]['addr']
+        self.log("🔄 %s: Sending NETWORK_UPDATE to parent %s" % (str(self.addr), str(addr)))
+        self.send({
+            'dest': addr,
+            'type': 'NETWORK_UPDATE',
+            'source': self.addr,
+            'gui': self.id,
+            'descendants': temp_descendants,
+            'created': self.now
+        })
+        self.lose_energy()
+
+    def send_random_data(self, dest):
+        """Sends a random data message to given destination address. (Multi-hop)
+
+        Args:
+            dest (Addr): Address of destination node.
+
+        Returns:
+
+        """
+        data_payload = RNG.randint(0, 1000)
+        self.log("📦 %s: Sending DATA (%s) to random address %s" % (str(self.addr), str(data_payload), str(dest)))
+        self.route_and_forward({
+            'dest': dest,
+            'type': 'DATA',
+            'source': self.addr,
+            'payload': data_payload,
+            'ttl': config.SIM_TTL,
+            'created': self.now
+        })
+    
+    ##########
+    # Timers #
+    ##########
     def on_timer_fired(self, name, *args, **kwargs):
         """Executes when a timer fired.
 
@@ -130,7 +356,12 @@ class SensorNode(wsn.Node):
                 # self.log("👋 Activated.")
                 self.wake_up()
                 self.set_role(Roles.UNDISCOVERED)
+                self.activation_time = self.now
                 self.set_timer('TIMER_PROBE', 1)
+
+            case 'TIMER_DIE':
+                self.log("🔌 %s: Randomly turning off." % str(self.addr))
+                self.die()
         
             case 'TIMER_PROBE':
                 if self.probe_counter < self.probe_threshold:
@@ -187,266 +418,9 @@ class SensorNode(wsn.Node):
                     pass
                 self.set_timer('TIMER_DEBUG', 100)
 
-    ###################
-    def set_role(self, new_role, *, recolor=True):
-        """Central place to switch roles, keep tallies, and (optionally) recolor."""
-        old_role = getattr(self, "role", None)
-        if old_role is not None:
-            ROLE_COUNTS[old_role] -= 1
-            if ROLE_COUNTS[old_role] <= 0:
-                ROLE_COUNTS.pop(old_role, None)
-        ROLE_COUNTS[new_role] += 1
-        self.role = new_role
-
-        if recolor:
-            if new_role == Roles.OFF:
-                self.scene.nodecolor(self.id, 0.70, 0.70, 0.70)
-            elif new_role == Roles.UNDISCOVERED:
-                self.scene.nodecolor(self.id, 0.80, 0.31, 0.24) # red
-            elif new_role == Roles.UNREGISTERED:
-                self.scene.nodecolor(self.id, 0.91, 0.59, 0.18) # yellow
-            elif new_role == Roles.REGISTERED:
-                self.scene.nodecolor(self.id, 0.06, 0.52, 0.33) # green
-                # self.draw_tx_range()
-            elif new_role == Roles.ROUTER:
-                self.scene.nodecolor(self.id, 0.62, 0.17, 0.92) # purple
-            elif new_role == Roles.CLUSTER_HEAD:
-                self.scene.nodecolor(self.id, 0.11, 0.21, 0.89) # blue
-                self.draw_tx_range()
-            elif new_role == Roles.ROOT:
-                self.scene.nodecolor(self.id, 0.00, 0.00, 0.00)
-                self.draw_tx_range()
-                self.set_timer('TIMER_EXPORT_CH_CSV', config.EXPORT_CH_CSV_INTERVAL)
-                self.set_timer('TIMER_EXPORT_NEIGHBOR_CSV', config.EXPORT_NEIGHBOR_CSV_INTERVAL)
-
-    ###################
-    #    Messages     #
-    ###################
-    def send_probe(self):
-        """Sends a probe message to all neighbors. (1-hop)
-
-        Args:
-
-        Returns:
-
-        """
-        #self.log("🔎 Sending PROBE.")
-        self.send({
-            'dest': wsn.BROADCAST_ADDR,
-            'type': 'PROBE'
-        })
-        self.lose_energy()
-
-    def send_heartbeat(self):
-        """Sends a heartbeat message to announce node's presence to neighbors. (1-hop)
-
-        Args:
-
-        Returns:
-
-        """
-        #self.log("💕 %s: Sent HEARTBEAT." % (self.ch_addr if self.ch_addr is not None else self.addr))
-        self.send({
-            'dest': wsn.BROADCAST_ADDR,
-            'type': 'HEARTBEAT',
-            'source': self.ch_addr if self.ch_addr is not None else self.addr,
-            'gui': self.id,
-            'role': self.role,
-            'addr': self.addr,
-            'ch_addr': self.ch_addr,
-            'hops_to_root': self.hops_to_root
-        })
-        self.lose_energy()
-
-    def send_join_request(self, dest):
-        """Sends a join request to the destination address to join the network. (1-hop)
-
-        Args:
-            dest (Addr): Address of destination node
-        Returns:
-
-        """
-        self.log('💬 [Node %s]: Sent JOIN_REQUEST to %s' % (self.id, str(dest)))
-        self.send({
-            'dest': dest,
-            'type': 'JOIN_REQUEST',
-            'gui': self.id
-        })
-        self.lose_energy()
-
-    def send_join_response(self, dest, resp, addr=wsn.Addr(0,0)):
-        """Sends a join reply message to register the node that requested to join after being promoted to clusterhead.
-        The message includes a gui to determine which node will take this reply, an addr to be assigned to the node,
-        and a root_addr. (1-hop)
-
-        Args:
-            dest (int): GUI of destination node
-            resp (string): 'ACCEPT' or 'REJECT'
-            addr (Addr): Address that will be assigned to new registered node
-        Returns:
-
-        """
-        if resp == 'ACCEPT':
-            self.log('💬 %s: Sent JOIN_RESPONSE (%s) to Node %s, address assigned %s' % (str(self.ch_addr), resp, str(dest), str(addr)))
-        else:
-            self.log('💬 %s: Sent JOIN_RESPONSE (%s) to Node %s' % (str(self.ch_addr), resp, str(dest)))
-        self.send({
-            'dest': wsn.BROADCAST_ADDR,
-            'type': 'JOIN_RESPONSE',
-            'source': self.ch_addr,
-            'gui': self.id,
-            'dest_gui': dest,
-            'response': resp,
-            'addr': addr,
-            'root_addr': self.root_addr,
-            'hops_to_root': self.hops_to_root+1
-        })
-        self.lose_energy()
-
-    def send_nomination(self, dest, addr):
-        self.log("✨ %s: Sent NOMINATION to Node %s, address assigned %s" % (str(self.addr), str(dest), str(addr)))
-        self.send({
-            'dest': wsn.BROADCAST_ADDR,
-            'type': 'NOMINATION',
-            'source': self.addr,
-            'gui': self.id,
-            'dest_gui': dest,
-            'addr': addr,
-            'root_addr': self.root_addr,
-            'hops_to_root': self.hops_to_root+1
-        })
-        self.lose_energy()
-
-    def send_join_ack(self, dest):
-        """Sending join acknowledgement message to given destination address. (1-hop)
-
-        Args:
-            dest (Addr): Address of destination node
-        Returns:
-
-        """
-        self.log('💬 %s: Sending JOIN_ACK to %s' % (str(self.addr), str(dest)))
-        self.send({
-            'dest': dest,
-            'type': 'JOIN_ACK',
-            'source': self.addr,
-            'gui': self.id
-        })
-        self.lose_energy()
-
-    def send_network_request(self, dest):
-        """Sends a network request message to given destination address. (Multi-hop)
-
-        Args:
-            dest (Addr): Address of destination node
-        Returns:
-
-        """
-        self.log("📡 %s: Finished collection. Sending NETWORK_REQUEST to destination %s" % (str(self.addr), str(dest)))
-        self.route_and_forward({
-            'dest': dest,
-            'type': 'NETWORK_REQUEST',
-            'source': self.addr,
-            'ttl': 101
-        })
-
-    def send_network_response(self, dest, addr):
-        """Sending network reply message to dest address to be cluster head with a new adress
-
-        Args:
-            dest (Addr): destination address
-            source (Addr): source address
-            addr (Addr): cluster head address of new network
-
-        Returns:
-
-        """
-        self.log("📡 %s: Sending NETWORK_RESPONSE to %s with CH address %s" % (str(self.addr), str(dest), str(addr)))
-        self.route_and_forward({
-            'dest': dest,
-            'type': 'NETWORK_RESPONSE',
-            'source': self.addr,
-            'addr': addr,
-            'ttl': 101
-        })
-
-    def send_network_update(self):
-        """Sending network update message to parent (1-hop)
-
-        Args:
-
-        Returns:
-
-        """
-        temp_descendants = []
-        if self.ch_addr is not None:
-            temp_descendants = [self.ch_addr.net_addr]
-        for networks in self.descendants.values():
-            temp_descendants.extend(networks)
-        
-        if self.neighbors[self.parent_gui]['ch_addr'] is not None:
-            addr = self.neighbors[self.parent_gui]['ch_addr']
-        elif self.neighbors[self.parent_gui]['addr'] is not None:
-            addr = self.neighbors[self.parent_gui]['addr']
-        self.log("🔄 %s: Sending NETWORK_UPDATE to parent %s" % (str(self.addr), str(addr)))
-        self.send({
-            'dest': addr,
-            'type': 'NETWORK_UPDATE',
-            'source': self.addr,
-            'gui': self.id,
-            'descendants': temp_descendants
-        })
-        self.lose_energy()
-        
-    def share_neighbors(self):
-        """Sends a node's neighbors to broadcast address.
-
-        Args:
-
-        Returns:
-
-        """
-        temp_neighbors = {}
-        for gui, pck in self.neighbors.items():
-            if gui == self.id:
-                break
-            temp_pck = dict(pck)
-            if temp_pck['hops_away'] < config.SIM_NEIGHBOR_TABLE_HOPS:
-                temp_pck['hops_away'] += 1
-                temp_pck['next_hop'] = self.addr
-                temp_neighbors[gui] = temp_pck
-        #self.log("📝 %s: Sharing neighbors: %s" % (self.addr, list(temp_neighbors)))
-        self.send({
-            'dest': wsn.BROADCAST_ADDR,
-            'type': 'NEIGHBOR_SHARE',
-            'source': self.addr,
-            'gui': self.id,
-            'neighbors': temp_neighbors
-        })
-        self.lose_energy()
-
-    def send_random_data(self, dest):
-        """Sends a random data message to given destination address. (Multi-hop)
-
-        Args:
-            dest (Addr): Address of destination node.
-
-        Returns:
-
-        """
-        data_payload = RNG.randint(0, 1000)
-        self.log("📦 %s: Sending DATA (%s) to random address %s" % (str(self.addr), str(data_payload), str(dest)))
-        self.route_and_forward({
-            'dest': dest,
-            'type': 'DATA',
-            'source': self.addr,
-            'payload': data_payload,
-            'ttl': 101,
-        })
-
-    ###################
-    #    Receives     #
-    ###################
+    ############
+    # Receives #
+    ############
     def on_receive(self, pck):
         """Executes when a package received.
 
@@ -539,7 +513,7 @@ class SensorNode(wsn.Node):
                 case 'JOIN_ACK':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
                         self.members[pck['gui']] = pck
-                        self.log(self.join_request_senders)
+                        #self.log(self.join_request_senders)
                         if self.join_request_senders.get(pck['gui']):
                             self.join_request_senders.pop(pck['gui'])
                         USED_ADDRS.append(pck['source'])
@@ -554,7 +528,7 @@ class SensorNode(wsn.Node):
                 case 'NETWORK_RESPONSE':
                     if self.role == Roles.REGISTERED:
                         # either promote self to CH, or select and nominate a downstream node to become CH
-                        if config.SIM_ROUTER_MODE:
+                        if config.SIM_INCLUDE_ROUTERS:
                             self.select_and_nominate(pck['addr'])
                             self.set_role(Roles.ROUTER)
                             self.join_request_senders = {}
@@ -590,7 +564,7 @@ class SensorNode(wsn.Node):
                     if self.role == Roles.UNREGISTERED:
                         if pck['dest_gui'] == self.id:
                             self.set_role(Roles.CLUSTER_HEAD)
-                            self.log("🚀 [Node %s]: Received NOMINATION. Promoting to CLUSTER_HEAD with address %s" % (self.id, str(pck['addr'])))
+                            self.log("🚀 [Node %s]: Received NOMINATION. Joining as CLUSTER_HEAD with address %s" % (self.id, str(pck['addr'])))
                             self.ch_addr = pck['addr']
                             self.addr = self.ch_addr
                             self.parent_gui = pck['gui']
@@ -606,46 +580,13 @@ class SensorNode(wsn.Node):
                             self.send_heartbeat()
                             self.join_request_senders = {}
                 case 'DATA':
-                    self.log("📬 %s: Received DATA (%s) from %s" % (str(self.addr), str(pck['payload']), str(pck['source'])))
+                    self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
         else:
             self.route_and_forward(pck)
 
-    ###################
-    #     Helpers     #
-    ###################
-    def update_neighbors(self, pck):
-        pck['arrival_time'] = self.now
-        pck['hops_away'] = 1
-        pck['next_hop'] = pck['addr']
-        # compute Euclidean distance between self and neighbor
-        if pck['gui'] in NODE_POS and self.id in NODE_POS:
-            x1, y1 = NODE_POS[self.id]
-            x2, y2 = NODE_POS[pck['gui']]
-            pck['distance'] = math.hypot(x1 - x2, y1 - y2)
-        #self.log("Neighbor added: (%s, %s)" % (pck['gui'], pck['hops_away']))
-        self.neighbors[pck['gui']] = pck
-
-        if pck['gui'] not in self.descendants.keys() or pck['gui'] not in self.descendants:
-            if pck['gui'] not in self.candidate_parents:
-                self.candidate_parents[pck['gui']] = pck
-
-    def become_unregistered(self):
-        if self.role != Roles.UNDISCOVERED:
-            self.kill_all_timers()
-        self.clear_data()
-        self.set_role(Roles.UNREGISTERED)
-        self.send_probe()
-        self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
-
-    def lose_energy(self):
-        if config.SIM_ENERGY_LOSS:
-            self.energy_J -= 300 # large value for demonstration
-            if self.energy_J < 0.10 * 21600:
-                self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
-                self.clear_data()
-                self.set_role(Roles.OFF)
-                self.sleep()
-
+    ###########
+    # Actions #
+    ###########
     def select_and_join(self):
         min_hops_to_root = 99999
         min_hop_gui = 99999
@@ -679,6 +620,56 @@ class SensorNode(wsn.Node):
         self.join_request_senders = {}
 
         self.send_nomination(max_distance_gui, addr)
+
+    def update_neighbors(self, pck):
+        pck['arrival_time'] = self.now
+        pck['hops_away'] = 1
+        pck['next_hop'] = pck['addr']
+        # compute Euclidean distance between self and neighbor
+        if pck['gui'] in NODE_POS and self.id in NODE_POS:
+            x1, y1 = NODE_POS[self.id]
+            x2, y2 = NODE_POS[pck['gui']]
+            pck['distance'] = math.hypot(x1 - x2, y1 - y2)
+        #self.log("Neighbor added: (%s, %s)" % (pck['gui'], pck['hops_away']))
+        self.neighbors[pck['gui']] = pck
+
+        if pck['gui'] not in self.descendants.keys() or pck['gui'] not in self.descendants:
+            if pck['gui'] not in self.candidate_parents:
+                self.candidate_parents[pck['gui']] = pck
+
+    def check_neighbors(self):
+        """Checks neighbors if they are still alive or not. If not, updates necessary tables.
+        Sends heartbeat and network update messages in need.
+
+        Args:
+
+        Returns:
+
+        """
+        childs_updated = False
+        parent_dead = False
+        will_be_removed = []
+        for gui, pck in self.neighbors_table.items():
+            if self.now - pck['arrival_time'] > 3 * config.HEARTBEAT_INTERVAL:
+                will_be_removed.append(gui)
+                if gui == self.parent_gui:
+                    parent_dead = True
+                if gui in self.descendants.keys():
+                    del self.descendants[gui]
+                    childs_updated = True
+                if gui in self.candidate_parents:
+                    self.candidate_parents.remove(gui)
+        for gui in will_be_removed:
+            del self.neighbors[gui]
+        if self.role != Roles.UNREGISTERED:
+            if parent_dead:
+                self.repair()
+            else:
+                self.send_heart_beat()
+                self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
+                if childs_updated:
+                    if self.role != Roles.ROOT:
+                        self.send_network_update()
 
     def route_and_forward(self, pck):
         """Routes and forwards a multi-hop message according to cluster-mesh rules.
@@ -775,6 +766,83 @@ class SensorNode(wsn.Node):
             self.lose_energy()
         else:
             self.log("⛔ %s: %s could not be routed. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
+
+    ###########
+    # Helpers #
+    ###########
+    def set_role(self, new_role, *, recolor=True):
+        """Central place to switch roles, keep tallies, and (optionally) recolor."""
+        old_role = getattr(self, "role", None)
+        if old_role is not None:
+            ROLE_COUNTS[old_role] -= 1
+            if ROLE_COUNTS[old_role] <= 0:
+                ROLE_COUNTS.pop(old_role, None)
+        ROLE_COUNTS[new_role] += 1
+        self.role = new_role
+
+        if recolor:
+            match new_role:
+                case Roles.OFF:
+                    self.scene.nodecolor(self.id, 0.50, 0.50, 0.50)
+                case Roles.UNDISCOVERED:
+                    self.scene.nodecolor(self.id, 0.80, 0.31, 0.24) # red
+                case Roles.UNREGISTERED:
+                    self.scene.nodecolor(self.id, 0.91, 0.59, 0.18) # yellow
+                case Roles.REGISTERED:
+                    self.scene.nodecolor(self.id, 0.06, 0.52, 0.33) # green
+                    # self.draw_tx_range()
+                case Roles.ROUTER:
+                    self.scene.nodecolor(self.id, 0.62, 0.17, 0.92) # purple
+                case Roles.CLUSTER_HEAD:
+                    self.scene.nodecolor(self.id, 0.11, 0.21, 0.89) # blue
+                    self.draw_tx_range()
+                case Roles.ROOT:
+                    self.scene.nodecolor(self.id, 0.00, 0.00, 0.00)
+                    self.draw_tx_range()
+                    self.set_timer('TIMER_EXPORT_CH_CSV', config.EXPORT_CH_CSV_INTERVAL)
+                    self.set_timer('TIMER_EXPORT_NEIGHBOR_CSV', config.EXPORT_NEIGHBOR_CSV_INTERVAL)
+
+    def clear_data(self):
+        self.erase_parent()
+
+        self.addr = None
+        self.ch_addr = None
+        self.parent_gui = None
+        self.root_addr = None
+
+        self.hops_to_root = 99999
+
+        self.probe_counter = 0
+        self.probe_threshold = 5
+
+        self.neighbors = {}
+        self.candidate_parents = {}
+        self.join_request_senders = {}
+        self.members = {} # CH only
+        self.descendants = {} # aka "child net table". CH only
+
+    def become_unregistered(self):
+        if self.role != Roles.UNDISCOVERED:
+            self.kill_all_timers()
+        self.clear_data()
+        self.set_role(Roles.UNREGISTERED)
+        self.send_probe()
+        self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
+
+    def lose_energy(self):
+        if config.SIM_ENERGY_LOSS:
+            self.energy_J -= 300 # large value for demonstration
+            if self.energy_J < 0.10 * 21600:
+                self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
+                self.die()
+
+    def die(self):
+        self.sleep()
+        self.clear_data()
+        self.kill_all_timers()
+        self.set_role(Roles.OFF)
+
+
 
 ###########################################################
 def create_network(node_class, number_of_nodes=100):
