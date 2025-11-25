@@ -20,7 +20,7 @@ SIM_RANDOM_SEED = 127
 SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
 SIM_DURATION = 410  # simulation duration in seconds
-SIM_DURATION = 2000
+SIM_DURATION = 1500
 SIM_TIME_SCALE = 0.01  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
@@ -31,12 +31,12 @@ SIM_ROUTING_LOGS = True
 SIM_TTL = 32
 
 ## modes
-SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes
+SIM_SEND_RANDOM_DATA = True  # nodes send random data packets to other nodes
 SIM_INCLUDE_ROUTERS = False
 SIM_ENERGY_LOSS = False
 SIM_PACKET_LOSS_RATE = 0  # self-explanatory. currently doesn't work great with it active
 SIM_KILL_NODES = True
-REPAIRING_METHOD = 'FIND_ANOTHER_PARENT' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
+REPAIRING_METHOD = 'ALL_ORPHAN' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
 
 ## application properties
 LOGGING = True
