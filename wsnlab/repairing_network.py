@@ -64,7 +64,7 @@ class SensorNode(wsn.Node):
         if self.id != ROOT_ID:
             rand = random.randint(0,10)
             if rand % 5 == 1:
-                self.set_timer('TIMER_DEAD', 300)
+                self.set_timer('TIMER_DEAD', 500)
 
     ###################
     def become_unregistered(self):
@@ -430,6 +430,7 @@ class SensorNode(wsn.Node):
             if pck['type'] == 'NETWORK_REPLY':  # it becomes cluster head and send join reply to the candidates
                 self.role = Roles.CLUSTER_HEAD
                 self.scene.nodecolor(self.id, 0, 0, 1)
+                self.draw_tx_range()
                 self.ch_addr = pck['addr']
                 self.send_network_update()
                 self.send_heart_beat()
@@ -526,6 +527,7 @@ class SensorNode(wsn.Node):
             self.sleep()
             self.log('I AM DEAD')
             self.scene.nodecolor(self.id, 1, 1, 1)  # sets self color to red
+            self.erase_tx_range()
             self.erase_parent()
             self.kill_all_timers()
 

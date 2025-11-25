@@ -15,8 +15,9 @@ Roles = Enum('Roles', 'OFF UNDISCOVERED UNREGISTERED ROOT REGISTERED CLUSTER_HEA
 """Enumeration of roles"""
 
 RNG = random.Random(config.SIM_RANDOM_SEED)
-print("Using random seed: ", config.SIM_RANDOM_SEED)
-print("###########################################")
+with open('EE662output.txt', 'w') as f:
+    print("Using random seed: ", config.SIM_RANDOM_SEED)
+    print("###########################################")
 
 ROOT_ID = RNG.randint(0, config.SIM_NODE_COUNT)
 
@@ -25,6 +26,45 @@ NODE_POS = {}
 USED_ADDRS = []
 ADDR_NODE_KEY = {}
 ROLE_COUNTS = Counter()
+
+'''
+Midterm 2 - Elpy Perez
+
+Implementation Status:
+1. Neighbor Tables
+    - Added NEIGHBOR_SHARE packet for multi-hop
+2. Clusterhead Tables (Child Net/Members)
+    - Child net table is now known as "descendants".
+    - Mostly unchanged aside from organizational stuff.
+3. Routing
+    - Implemented according to rules set in design document
+    - Includes multi-hop routing via next hop, route poisioning to avoid loops
+    - Added DATA packet to inspect routes
+4. Config Parameters
+    - Max cluster size paramenter working nominally.
+    - Tx power able to be adjusted but not able to respond to conditions.
+    - Packet loss parameter added, relevant important packets get re-sent
+5. Routers
+    - Router mode implemented.
+    - Added NOMINATION packet to promote joining node to CH w/ address from NETWORK_RESPONSE
+    - Node that sends NOMINATION packet turns into a router, can only interact with other routers and CHs
+    - Choice of node to nominate only chooses based on farthest distance
+6. Recovery
+    - Both algorithms seem to work, from partially to fully.
+    - ALL_ORPHAN seems to fully repair after killing nodes.
+        - However, it seems to take longer to rejoin as a result of waiting for heartbeats.
+    - FIND_ANOTHER_PARENT seems to partially work.
+        - But something causes NETWORK_RESPONSEs to fail.
+        - It might be the network not properly updating descendants?
+7. Maintenance/Optimization
+    - No reorganization other than when performing repairs yet.
+8. Energy Model
+    - Rudimentary energy loss system is in place.
+    - Currently, a fixed amount of a node's energy is lost when sending any packet.
+    - If it reaches a threshold, it powers off (and triggers repair).
+A. Known Issues
+    - Root has no mechanism for freeing up used networks.
+'''
 
 ###########################################################
 class SensorNode(wsn.Node):
@@ -63,7 +103,11 @@ class SensorNode(wsn.Node):
         # parameters
         self.probe_counter = 0
         self.probe_threshold = 5
+        self.join_counter = 0
+        self.join_threshold = 5
         self.hops_to_root = 99999
+
+        self.logging = config.LOGGING
 
         # tables and trackers
         self.activation_time = None
@@ -88,6 +132,33 @@ class SensorNode(wsn.Node):
 
         self.sleep()
 
+    def clear_data(self):
+        self.erase_parent()
+
+        self.addr = None
+        self.ch_addr = None
+        self.parent_gui = None
+        self.root_addr = None
+
+        self.hops_to_root = 99999
+
+        self.probe_counter = 0
+        self.probe_threshold = 5
+
+        self.join_counter = 0
+        self.join_threshold = 5
+
+        self.poisoned_addr = None
+
+        self.neighbors = {}
+        self.candidate_parents = {}
+        self.join_request_senders = {}
+        self.members = {} # CH only
+        self.descendants = {} # aka "child net table". CH only
+        self.node_vacancies = [True] + [False] * (config.SIM_MAX_CLUSTER_SIZE-1) if config.SIM_MAX_CLUSTER_SIZE is not None else [True] + [False] * 253
+
+        #self.log("Data cleared.")
+
     def run(self):
         """Setting the arrival timer to wake up after firing.
 
@@ -98,7 +169,7 @@ class SensorNode(wsn.Node):
         """
         self.set_timer('TIMER_ACTIVATE', self.arrival)
 
-        if self.id != ROOT_ID:
+        if config.SIM_KILL_NODES == True and self.id != ROOT_ID:
             if RNG.random() < 0.15:
                 self.set_timer('TIMER_DIE', 500)
 
@@ -156,6 +227,7 @@ class SensorNode(wsn.Node):
             'dest': dest,
             'type': 'JOIN_REQUEST',
             'gui': self.id,
+            'ttl': config.SIM_TTL,
             'created': self.now
         })
         self.lose_energy()
@@ -318,6 +390,21 @@ class SensorNode(wsn.Node):
         })
         self.lose_energy()
 
+    def send_orphan_notice(self):
+        """Sends i am orphan message to inform its neighbors.
+
+        Args:
+
+        Returns:
+
+        """
+        self.log("Broadcasting orphan notice.")
+        self.send({
+            'dest': wsn.BROADCAST_ADDR,
+            'type': 'ORPHAN_NOTICE',
+            'source': self.ch_addr
+        })
+
     def send_random_data(self, dest):
         """Sends a random data message to given destination address. (Multi-hop)
 
@@ -390,17 +477,29 @@ class SensorNode(wsn.Node):
 
             case 'TIMER_HEARTBEAT':
                 self.send_heartbeat()
+                self.check_neighbors()
                 self.share_neighbors()
+                #self.log(self.neighbors)
                 self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
 
             case 'TIMER_JOIN_REQUEST_SEND':  # if it has not received heart beat messages before, it sets timer again and wait heart beat messages once join request timer fired.
+                self.check_neighbors()
+                #self.log(self.candidate_parents)
                 if len(self.candidate_parents) == 0:
+                    if self.ch_addr is not None: # if it has a cluster head address. (if it is in repairing phase)
+                        self.send_orphan_notice()
                     self.become_unregistered()
                 else:  # otherwise it chose one of them and sends join request
                     self.select_and_join()
 
             case 'TIMER_JOIN_REQUEST_RECV':  # after collecting join requests for some time, send a network request to root
                 self.send_network_request(self.root_addr)
+                self.set_timer("TIMER_NETWORK_REQUEST", 50)
+
+            case 'TIMER_NETWORK_REQUEST':
+                self.log("Resending NETWORK_REQUEST...")
+                self.send_network_request(self.root_addr)
+                self.set_timer("TIMER_NETWORK_REQUEST", 50)
 
             case 'TIMER_RANDOM_DATA':
                 if RNG.random() < 0.3:
@@ -444,6 +543,7 @@ class SensorNode(wsn.Node):
                 case 'PROBE':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD, Roles.REGISTERED, Roles.ROUTER]:
                         self.send_heartbeat()
+                
                 case 'HEARTBEAT':
                     #self.log("📨 Received heartbeat from Node %s" % pck['gui'])
                     self.update_neighbors(pck)
@@ -459,6 +559,7 @@ class SensorNode(wsn.Node):
                         self.log("👀 [Network]: Node %s discovered." % str(self.id))
                         self.kill_timer('TIMER_PROBE')
                         self.become_unregistered()
+                
                 case 'NEIGHBOR_SHARE':
                     temp_neighbors = dict(pck['neighbors'])
                     if self.id in temp_neighbors:
@@ -466,6 +567,7 @@ class SensorNode(wsn.Node):
                     for gui, pck in temp_neighbors.items():
                         if gui not in self.neighbors or pck['hops_away'] < self.neighbors[gui]['hops_away']:
                             self.neighbors[gui] = pck
+                
                 case 'JOIN_REQUEST':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
                         if not all(self.node_vacancies):
@@ -484,12 +586,13 @@ class SensorNode(wsn.Node):
                             #self.log(str(self.join_request_senders))
                             self.join_request_senders[pck['gui']] = pck
                             self.kill_timer('TIMER_JOIN_REQUEST_RECV') # reset timer
-                            self.set_timer('TIMER_JOIN_REQUEST_RECV', 4)
+                            self.set_timer('TIMER_JOIN_REQUEST_RECV', 5)
                         else:
                             self.log("➖ %s: Node %s already in join request senders. Ignoring." % (str(self.addr), str(pck['gui'])))
                             pass
                     elif self.role == Roles.ROUTER:
                         self.send_join_response(pck['gui'], 'REJECT')
+                
                 case 'JOIN_RESPONSE':
                     if self.role == Roles.UNREGISTERED:
                         if pck['dest_gui'] == self.id:
@@ -510,6 +613,7 @@ class SensorNode(wsn.Node):
                             elif pck['response'] == 'REJECT':
                                 self.log("🚫 [Node %s]: Node %s is full. Removing from candidate parents. Remaining: %s" % (str(self.id), str(pck['gui']), list(self.candidate_parents)))
                                 self.candidate_parents.pop(pck['gui'])
+                
                 case 'JOIN_ACK':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
                         self.members[pck['gui']] = pck
@@ -519,12 +623,14 @@ class SensorNode(wsn.Node):
                         USED_ADDRS.append(pck['source'])
                         ADDR_NODE_KEY[(pck['source'].net_addr, pck['source'].node_addr)] = pck['gui']
                         self.log('🤝 [Network]: Node %s joined as member with address %s' % (str(pck['gui']), str(pck['source'])))
+                
                 case 'NETWORK_REQUEST':
                     if self.role == Roles.ROOT:
                         self.log("📨 %s: Received NETWORK_REQUEST from %s" % (str(self.addr), str(pck['source'])))
                         chosen_net_addr = min([idx for idx, val in enumerate(self.net_vacancies) if val == False])
                         self.send_network_response(pck['source'], wsn.Addr(chosen_net_addr, 254))
                         self.net_vacancies[chosen_net_addr] = True
+                
                 case 'NETWORK_RESPONSE':
                     if self.role == Roles.REGISTERED:
                         # either promote self to CH, or select and nominate a downstream node to become CH
@@ -534,6 +640,7 @@ class SensorNode(wsn.Node):
                             self.join_request_senders = {}
                         else:
                             self.set_role(Roles.CLUSTER_HEAD)
+                            self.kill_timer('TIMER_NETWORK_REQUEST')
                             self.log("🚀 %s: Received NETWORK_RESPONSE. Promoting to CLUSTER_HEAD with address %s" % (str(self.addr), str(pck['addr'])))
                             self.ch_addr = pck['addr']
                             ADDR_NODE_KEY[(self.ch_addr.net_addr, self.ch_addr.node_addr)] = self.id
@@ -549,6 +656,7 @@ class SensorNode(wsn.Node):
                                     self.node_vacancies[chosen_node_addr] = True
                                 else:
                                     self.send_join_response(gui, 'REJECT')
+                
                 case 'NETWORK_UPDATE':
                     match self.role:
                         case Roles.ROOT:
@@ -560,6 +668,7 @@ class SensorNode(wsn.Node):
                             #self.log("🔄 %s: Updated descendants with Node %s: %s" % (str(self.addr), str(pck['gui']), str(pck['descendants'])))
                             #self.log(self.descendants)
                             self.send_network_update()
+                
                 case 'NOMINATION':
                     if self.role == Roles.UNREGISTERED:
                         if pck['dest_gui'] == self.id:
@@ -579,6 +688,13 @@ class SensorNode(wsn.Node):
                             self.share_neighbors()
                             self.send_heartbeat()
                             self.join_request_senders = {}
+                
+                case 'ORPHAN_NOTICE':
+                    if self.role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.ROOT]:
+                        if pck['source'] == self.neighbors[self.parent_gui]['ch_addr'] or pck['source'] == self.neighbors[self.parent_gui]['addr']:
+                            self.repair()
+                    
+
                 case 'DATA':
                     self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
         else:
@@ -590,15 +706,29 @@ class SensorNode(wsn.Node):
     def select_and_join(self):
         min_hops_to_root = 99999
         min_hop_gui = 99999
+        #self.check_neighbors()
+        #self.log(self.neighbors)
         for gui in self.candidate_parents.keys():
-            if self.neighbors[gui]['role'] != Roles.ROUTER:
+            if self.neighbors[gui]['role'] not in [Roles.UNREGISTERED, Roles.ROUTER]:
                 if self.neighbors[gui]['hops_to_root'] < min_hops_to_root or (self.neighbors[gui]['hops_to_root'] == min_hops_to_root and gui < min_hop_gui):
                     min_hops_to_root = self.neighbors[gui]['hops_to_root']
                     min_hop_gui = gui
         if min_hop_gui != 99999:
+            #self.log(min_hop_gui)
             selected_addr = self.neighbors[min_hop_gui]['source']
-            self.send_join_request(selected_addr)
-        self.set_timer('TIMER_JOIN_REQUEST_SEND', 5)
+            if self.join_counter < self.join_threshold:
+                self.send_join_request(selected_addr)
+                self.join_counter += 1
+                self.set_timer('TIMER_JOIN_REQUEST_SEND', 10)
+                return
+            else:
+                self.log("No JOIN_RESPONSE from selected address. Removing from candidate parents.")
+                self.join_counter = 0
+                del self.candidate_parents[min_hop_gui]
+                self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
+                return
+        self.log("No candidates found.")
+        self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
 
     def select_and_nominate(self, addr):
         max_distance = -1
@@ -649,7 +779,9 @@ class SensorNode(wsn.Node):
         childs_updated = False
         parent_dead = False
         will_be_removed = []
-        for gui, pck in self.neighbors_table.items():
+        #self.log(self.neighbors)
+        #self.log(self.candidate_parents)
+        for gui, pck in self.neighbors.items():
             if self.now - pck['arrival_time'] > 3 * config.HEARTBEAT_INTERVAL:
                 will_be_removed.append(gui)
                 if gui == self.parent_gui:
@@ -657,19 +789,72 @@ class SensorNode(wsn.Node):
                 if gui in self.descendants.keys():
                     del self.descendants[gui]
                     childs_updated = True
-                if gui in self.candidate_parents:
-                    self.candidate_parents.remove(gui)
+                if gui in self.candidate_parents.keys():
+                    del self.candidate_parents[gui]
         for gui in will_be_removed:
             del self.neighbors[gui]
         if self.role != Roles.UNREGISTERED:
             if parent_dead:
+                #self.log("Parent lost. Repair imminent.")
                 self.repair()
             else:
-                self.send_heart_beat()
-                self.set_timer('TIMER_HEART_BEAT', config.HEARTBEAT_INTERVAL)
+                #self.send_heartbeat()
+                #self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
+                # ^ this (from repairing_network.py) was creating additional duplicate heartbeats and lagging the simulation
                 if childs_updated:
                     if self.role != Roles.ROOT:
                         self.send_network_update()
+
+    def repair(self):
+        """Executes chosen repairing instructions.
+
+        Args:
+
+        Returns:
+
+        """
+        if self.role == Roles.REGISTERED:
+            self.become_unregistered()
+        else:
+            if config.REPAIRING_METHOD == 'ALL_ORPHAN':
+                self.repair_all_orphan()
+            elif config.REPAIRING_METHOD == 'FIND_ANOTHER_PARENT':
+                self.repair_find_another_parent()
+
+    def repair_all_orphan(self):
+        """Becomes unregistered and sends I am orphan message.
+
+        Args:
+
+        Returns:
+
+        """
+        self.send_orphan_notice()
+        self.become_unregistered()
+
+    def repair_find_another_parent(self):
+        """If it has potential parent in its table, tries to connect any of them. Otherwise becomes unregistered.
+
+        Args:
+
+        Returns:
+
+        """
+        if self.parent_gui in self.candidate_parents:
+            del self.candidate_parents[self.parent_gui]
+            del self.neighbors[self.parent_gui]
+        # candidate parents should not be in your members either
+        for gui in self.members.keys():
+            if gui in self.candidate_parents:
+                del self.candidate_parents[gui]
+        if len(self.candidate_parents) != 0:
+            self.kill_all_timers()
+            self.erase_parent()
+            self.role = Roles.UNREGISTERED
+            self.select_and_join()
+        else:
+            self.send_orphan_notice()
+            self.become_unregistered()
 
     def route_and_forward(self, pck):
         """Routes and forwards a multi-hop message according to cluster-mesh rules.
@@ -679,17 +864,24 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
+        #self.log(pck)
         #self.log("🚛 %s: Routing %s to destination %s..." % (str(self.addr), pck['type'], str(pck['dest'])))
+        #self.log(self.parent_gui)
+        #self.log("Descendants: %s" % str(self.descendants))
         pck['next_hop'] = None
         if self.role != Roles.ROOT and self.parent_gui is not None:
-            log_string = "🚛 %s: Next hop: parent %s" % (str(self.addr), str(self.neighbors[self.parent_gui]['addr']))
-            pck['next_hop'] = self.neighbors[self.parent_gui]['addr']
+            #self.log("Routing: parent.")
+            if self.parent_gui in self.neighbors:
+                log_string = "🚛 %s: Next hop: parent %s" % (str(self.addr), str(self.neighbors[self.parent_gui]['addr']))
+                pck['next_hop'] = self.neighbors[self.parent_gui]['addr']
         if self.ch_addr is not None:
             if pck['dest'].net_addr == self.ch_addr.net_addr:
+                #self.log("Routing: cluster member.")
                 log_string = "🚛 %s: Next hop: cluster member %s" % (str(self.addr), str(self.ch_addr))
                 pck['next_hop'] = pck['dest']
         for child_gui, child_networks in self.descendants.items():
             if pck['dest'].net_addr in child_networks:
+                #self.log("Routing: descendant.")
                 log_string = "🚛 %s: Next hop: descendant %s" % (str(self.addr), str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
                 pck['next_hop'] = self.neighbors[child_gui]['addr']
         # add mesh routing using neighbor tables. overrides tree routing (what to do with routers....)
@@ -698,7 +890,7 @@ class SensorNode(wsn.Node):
         temp_neighbors_inverted.update({(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
         #self.log("Poisoned address: %s" % str(self.poisoned_addr))
         
-        if self.poisoned_addr is not None:
+        if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
             # this restriction is here because frequently-used gateways get poisoned the most
             if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
                 temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
@@ -721,15 +913,15 @@ class SensorNode(wsn.Node):
             # if destination is directly a neighbor node...
             if dest_node_addr in node_addr_candidates:
                 # make note of the address to use
-                #self.log("Found exact match.")
+                #self.log("Routing: Found exact match.")
                 neighbor_node_addr = dest_node_addr
             # if you have the destination's clusterhead that's good too
             elif 254 in node_addr_candidates:
-                #self.log("Found clusterhead of destination.")
+                #self.log("Routing: Found clusterhead of destination.")
                 neighbor_node_addr = 254
             # otherwise choose the candidate with the least hops away
             else:
-                #self.log("Choosing closest neighbor.")
+                #self.log("Routing: Choosing closest neighbor.")
                 hops_away_table = {}
                 for node in node_addr_candidates:
                     gui = temp_neighbors_inverted[(dest_net_addr, node)]
@@ -751,8 +943,10 @@ class SensorNode(wsn.Node):
             #one_hop_neighbor_info = self.neighbors[neighbor_id]
             #self.log(one_hop_neighbor_info)
             one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
-            pck['next_hop'] = one_hop_neighbor_addr
-            log_string = "🚛 %s: Next hop: 1-hop neighbor %s, towards neighbor %s" % (str(self.addr), str(one_hop_neighbor_addr), str(neighbor_addr))
+            if one_hop_neighbor_addr is not None:
+                #self.log("Routing: neighbor.")
+                pck['next_hop'] = one_hop_neighbor_addr
+                log_string = "🚛 %s: Next hop: 1-hop neighbor %s, towards neighbor %s" % (str(self.addr), str(one_hop_neighbor_addr), str(neighbor_addr))
                 
         if pck['next_hop'] is not None:
             self.poisoned_addr = pck['next_hop']
@@ -760,12 +954,12 @@ class SensorNode(wsn.Node):
             if config.SIM_ROUTING_LOGS == True:
                 self.log(log_string + " TTL: %s" % pck['ttl'])
             if pck['ttl'] <= 0:
-                self.log("⛔ %s: %s has expired. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
+                self.log("⛔ %s: %s has expired. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
                 return
             self.send(pck)
             self.lose_energy()
         else:
-            self.log("⛔ %s: %s could not be routed. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
+            self.log("⛔ %s: %s could not be routed. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
 
     ###########
     # Helpers #
@@ -783,11 +977,14 @@ class SensorNode(wsn.Node):
         if recolor:
             match new_role:
                 case Roles.OFF:
-                    self.scene.nodecolor(self.id, 0.50, 0.50, 0.50)
+                    self.scene.nodecolor(self.id, 0.80, 0.80, 0.80)
+                    self.erase_tx_range()
                 case Roles.UNDISCOVERED:
                     self.scene.nodecolor(self.id, 0.80, 0.31, 0.24) # red
+                    self.erase_tx_range()
                 case Roles.UNREGISTERED:
                     self.scene.nodecolor(self.id, 0.91, 0.59, 0.18) # yellow
+                    self.erase_tx_range()
                 case Roles.REGISTERED:
                     self.scene.nodecolor(self.id, 0.06, 0.52, 0.33) # green
                     # self.draw_tx_range()
@@ -797,35 +994,18 @@ class SensorNode(wsn.Node):
                     self.scene.nodecolor(self.id, 0.11, 0.21, 0.89) # blue
                     self.draw_tx_range()
                 case Roles.ROOT:
-                    self.scene.nodecolor(self.id, 0.00, 0.00, 0.00)
+                    self.scene.nodecolor(self.id, 0.93, 0.08, 0.60)
                     self.draw_tx_range()
                     self.set_timer('TIMER_EXPORT_CH_CSV', config.EXPORT_CH_CSV_INTERVAL)
                     self.set_timer('TIMER_EXPORT_NEIGHBOR_CSV', config.EXPORT_NEIGHBOR_CSV_INTERVAL)
 
-    def clear_data(self):
-        self.erase_parent()
-
-        self.addr = None
-        self.ch_addr = None
-        self.parent_gui = None
-        self.root_addr = None
-
-        self.hops_to_root = 99999
-
-        self.probe_counter = 0
-        self.probe_threshold = 5
-
-        self.neighbors = {}
-        self.candidate_parents = {}
-        self.join_request_senders = {}
-        self.members = {} # CH only
-        self.descendants = {} # aka "child net table". CH only
-
     def become_unregistered(self):
+        self.sleep()
         if self.role != Roles.UNDISCOVERED:
             self.kill_all_timers()
-        self.clear_data()
         self.set_role(Roles.UNREGISTERED)
+        self.clear_data()
+        self.wake_up()
         self.send_probe()
         self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
 

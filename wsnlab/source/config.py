@@ -16,25 +16,30 @@ SIM_TITLE = 'Cluster-Mesh Network'  # title of visualization window
 SIM_TERRAIN_SIZE = (850, 800)  #terrain size
 #SIM_TERRAIN_SIZE = (550, 500)  #terrain size
 SIM_SCALE = 1  # scale factor for visualization
-SIM_RANDOM_SEED = 125
+SIM_RANDOM_SEED = 127
 SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
 SIM_DURATION = 410  # simulation duration in seconds
-SIM_DURATION = 999
-SIM_TIME_SCALE = 0.1  #  The real time duration of 1 second simualtion time
+SIM_DURATION = 2000
+SIM_TIME_SCALE = 0.01  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
 ## other network/sim properties
 SIM_MAX_CLUSTER_SIZE = None  # max number of nodes in one cluster
-SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes
-SIM_PACKET_LOSS_RATE = 0  # self-explanatory. currently doesn't work great with it active
 SIM_NEIGHBOR_TABLE_HOPS = 4
-SIM_ENERGY_LOSS = False
 SIM_ROUTING_LOGS = True
-SIM_ROUTER_MODE = True
+SIM_TTL = 32
+
+## modes
+SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes
+SIM_INCLUDE_ROUTERS = False
+SIM_ENERGY_LOSS = False
+SIM_PACKET_LOSS_RATE = 0  # self-explanatory. currently doesn't work great with it active
+SIM_KILL_NODES = True
+REPAIRING_METHOD = 'FIND_ANOTHER_PARENT' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
 
 ## application properties
-HEARTBEAT_INTERVAL = 100
-REPAIRING_METHOD = 'FIND_ANOTHER_PARENT' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
+LOGGING = True
+HEARTBEAT_INTERVAL = 60
 EXPORT_CH_CSV_INTERVAL = 10  # simulation time units;
 EXPORT_NEIGHBOR_CSV_INTERVAL = 10  # simulation time units;

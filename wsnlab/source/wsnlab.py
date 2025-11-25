@@ -148,7 +148,7 @@ class Node:
         self.addr = Addr(0, id)
         self.ch_addr = None
         self.is_sleep = False
-        self.logging = True
+        self.logging = False
         self.active_timer_list = []
         self.neighbor_distance_list = []
         self.timeout = self.sim.timeout
@@ -187,6 +187,8 @@ class Node:
         """
         if self.logging:
             print(f"Node {'#' + str(self.id):4}[{self.now:10.5f}] {msg}")
+            with open('EE662output.txt', 'a', encoding="utf-8") as f:
+                f.write(f"Node {'#' + str(self.id):4}[{self.now:10.5f}] {msg}" + '\n')
 
     ############################
     def can_receive(self, pck):
