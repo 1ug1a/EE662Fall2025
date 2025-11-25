@@ -33,6 +33,15 @@ ROLE_COUNTS = Counter()
 Midterm 2 - Elpy Perez
 
 Implementation Status:
+0. Overall Changes (compared to previously provided code)
+    - Complete reorganizion
+    - Addressing changed to match design: counting from 1 onwards
+    - Network and node availability taken into account.
+        - New cluster tracking table for root.
+            - If hasn't recieved CLUSTER_ALIVE packet from CH after a while...
+            - ...Removes lease on that address.
+            - Chooses smallest available network address.
+        - Node availability only tracked using a simple list of booleans for each node address index.
 1. Neighbor Tables
     - Added NEIGHBOR_SHARE packet for multi-hop
 2. Clusterhead Tables (Child Net/Members)
@@ -41,7 +50,7 @@ Implementation Status:
 3. Routing
     - Implemented according to rules set in design document
     - Includes multi-hop routing via next hop, route poisioning to avoid loops
-    - Added DATA packet to inspect routes
+    - Added DATA packet to inspect mesh-tree routing.
 4. Config Parameters
     - Max cluster size paramenter working nominally.
     - Tx power able to be adjusted but not able to respond to conditions.
@@ -52,9 +61,7 @@ Implementation Status:
     - Node that sends NOMINATION packet turns into a router, can only interact with other routers and CHs
     - Choice of node to nominate only chooses based on farthest distance
 6. Recovery
-    - Both algorithms seem to work, from partially to fully.
-    - ALL_ORPHAN seems to fully repair after killing nodes.
-        - However, it seems to take longer to rejoin as a result of waiting for heartbeats.
+    - ALL_ORPHAN fully repairs.
     - FIND_ANOTHER_PARENT seems to partially work.
         - But something causes NETWORK_RESPONSEs to fail.
         - It might be the network not properly updating descendants?
@@ -65,7 +72,9 @@ Implementation Status:
     - Currently, a fixed amount of a node's energy is lost when sending any packet.
     - If it reaches a threshold, it powers off (and triggers repair).
 A. Known Issues
-    - Root has no mechanism for freeing up used networks.
+    - Somehow sending random data can still choose inactive addresses, causing loops.
+        - This is despite the fact that it got removed from the table it chooses from.
+        - See ADDR_NODE_KEY.txt and ACTIVE_ADDRS.txt.
 '''
 
 ###########################################################
@@ -124,7 +133,7 @@ class SensorNode(wsn.Node):
         self.descendants = {} # aka "child net table". CH only
         self.clusters = {}
         # CH only: node availability
-        self.node_vacancies = [True] + [False] * (config.SIM_MAX_CLUSTER_SIZE-1) if config.SIM_MAX_CLUSTER_SIZE is not None else [True] + [False] * 253
+        self.node_vacancies = [True] + [False] * (config.SIM_MAX_CLUSTER_SIZE-1) if config.SIM_MAX_CLUSTER_SIZE is not None else [True] + [False] * 252
 
         # logging
         self.set_timer('TIMER_DEBUG_STATUS', 99)
@@ -160,7 +169,7 @@ class SensorNode(wsn.Node):
         self.join_request_senders = {}
         self.members = {} # CH only
         self.descendants = {} # aka "child net table". CH only
-        self.node_vacancies = [True] + [False] * (config.SIM_MAX_CLUSTER_SIZE-1) if config.SIM_MAX_CLUSTER_SIZE is not None else [True] + [False] * 253
+        self.node_vacancies = [True] + [False] * (config.SIM_MAX_CLUSTER_SIZE-1) if config.SIM_MAX_CLUSTER_SIZE is not None else [True] + [False] * 252
 
         #self.log("Data cleared.")
 
@@ -176,7 +185,7 @@ class SensorNode(wsn.Node):
 
         if config.SIM_KILL_NODES == True and self.id != ROOT_ID:
             if RNG.random() < 0.15:
-                self.set_timer('TIMER_DIE', 500)
+                self.set_timer('TIMER_DIE', 600)
 
     ###########
     # Packets #
@@ -336,7 +345,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        self.log("📡 %s: Finished collection. Sending NETWORK_REQUEST to destination %s" % (str(self.addr), str(dest)))
+        self.log("📡 %s: Sending NETWORK_REQUEST to destination %s" % (str(self.addr), str(dest)))
         self.route_and_forward({
             'dest': dest,
             'type': 'NETWORK_REQUEST',
@@ -414,7 +423,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        self.log("Broadcasting orphan notice.")
+        self.log("📣 [Node %s]: Broadcasting orphan notice." % self.id)
         self.send({
             'dest': wsn.BROADCAST_ADDR,
             'type': 'ORPHAN_NOTICE',
@@ -516,7 +525,7 @@ class SensorNode(wsn.Node):
                 self.set_timer("TIMER_NETWORK_REQUEST", 50)
 
             case 'TIMER_NETWORK_REQUEST':
-                self.log("Resending NETWORK_REQUEST...")
+                self.log("↪️ %s: Resending NETWORK_REQUEST..." % str(self.addr))
                 self.send_network_request(self.root_addr)
                 self.set_timer("TIMER_NETWORK_REQUEST", 50)
 
@@ -656,9 +665,11 @@ class SensorNode(wsn.Node):
                 
                 case 'NETWORK_REQUEST':
                     if self.role == Roles.ROOT:
+                        pck['arrival_time'] = self.now
                         self.log("📨 %s: Received NETWORK_REQUEST from %s" % (str(self.addr), str(pck['source'])))
                         chosen_net_addr = min([net_addr for net_addr in range(2,254) if net_addr not in list(self.clusters.keys())])
                         self.send_network_response(pck['source'], wsn.Addr(chosen_net_addr, 254))
+                        self.clusters[chosen_net_addr] = pck
                 
                 case 'NETWORK_RESPONSE':
                     if self.role == Roles.REGISTERED:
@@ -735,7 +746,8 @@ class SensorNode(wsn.Node):
                 case 'DATA':
                     self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
         else:
-            self.route_and_forward(pck)
+            if self.addr is not None:
+                self.route_and_forward(pck)
 
     ###########
     # Actions #
@@ -759,7 +771,7 @@ class SensorNode(wsn.Node):
                 self.set_timer('TIMER_JOIN_REQUEST_SEND', 10)
                 return
             else:
-                self.log("No JOIN_RESPONSE from selected address. Removing from candidate parents.")
+                #self.log("✂️ [Node %s]: No JOIN_RESPONSE from selected address. Removing from candidate parents." % self.id)
                 self.join_counter = 0
                 del self.candidate_parents[min_hop_gui]
                 self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
@@ -919,17 +931,17 @@ class SensorNode(wsn.Node):
         if self.role != Roles.ROOT and self.parent_gui is not None:
             #self.log("Routing: parent.")
             if self.parent_gui in self.neighbors:
-                log_string = "🚛 %s: (%s) Next hop: parent %s" % (str(self.addr), pck['type'], str(self.neighbors[self.parent_gui]['addr']))
+                log_string = "next hop: parent %s" % (str(self.neighbors[self.parent_gui]['addr']))
                 pck['next_hop'] = self.neighbors[self.parent_gui]['addr']
         if self.ch_addr is not None:
             if pck['dest'].net_addr == self.ch_addr.net_addr:
                 #self.log("Routing: cluster member.")
-                log_string = "🚛 %s: (%s) Next hop: cluster member %s" % (str(self.addr), pck['type'],  str(self.ch_addr))
+                log_string = "next hop: cluster member %s" % str(self.ch_addr)
                 pck['next_hop'] = pck['dest']
         for child_gui, child_networks in self.descendants.items():
             if pck['dest'].net_addr in child_networks:
                 #self.log("Routing: descendant.")
-                log_string = "🚛 %s: (%s) Next hop: descendant %s" % (str(self.addr), pck['type'],  str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
+                log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
                 pck['next_hop'] = self.neighbors[child_gui]['addr']
         # add mesh routing using neighbor tables. overrides tree routing (what to do with routers....)
         # start by collecting all neighbor addresses (only if the neighbor has an addr or ch_addr)
@@ -939,7 +951,7 @@ class SensorNode(wsn.Node):
         if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
             # this restriction is here because frequently-used gateways get poisoned the most
             if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
-                self.log("Poisoned address: %s" % self.poisoned_addr)
+                #self.log("Poisoned address: %s" % self.poisoned_addr)
                 temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
         # remove non-leaf nodes for routers
         if self.role == Roles.ROUTER:
@@ -958,8 +970,8 @@ class SensorNode(wsn.Node):
         if dest_net_addr in [addr[0] for addr in temp_neighbors_inverted.keys()]:
             neighbor_net_addr = dest_net_addr
             node_addr_candidates = [addr[1] for addr in temp_neighbors_inverted.keys() if addr[0] == neighbor_net_addr]
-            self.log("Candidates (network %s): %s" % (neighbor_net_addr, list(node_addr_candidates)))
-            self.log([member['source'] for gui, member in self.members.items()])
+            #self.log("Candidates (network %s): %s" % (neighbor_net_addr, list(node_addr_candidates)))
+            #self.log([member['source'] for gui, member in self.members.items()])
             # if destination is directly a neighbor node...
             if dest_node_addr in node_addr_candidates:
                 # make note of the address to use
@@ -987,13 +999,13 @@ class SensorNode(wsn.Node):
             if one_hop_neighbor_addr is not None:
                 #self.log("Routing: neighbor.")
                 pck['next_hop'] = one_hop_neighbor_addr
-                log_string = "🚛 %s: (%s) Next hop: 1-hop neighbor %s, towards neighbor %s" % (str(self.addr), pck['type'], str(one_hop_neighbor_addr), str(neighbor_addr))
+                log_string = "next hop: %s towards neighbor %s" % (str(one_hop_neighbor_addr), str(neighbor_addr))
                 
         if pck['next_hop'] is not None:
             self.poisoned_addr = pck['next_hop']
             pck['ttl'] -= 1
             if config.SIM_ROUTING_LOGS == True and pck['type'] != 'CLUSTER_ALIVE':
-                self.log(log_string + " TTL: %s" % pck['ttl'])
+                self.log("🚛 %s: %s from %s to %s, " % (self.addr, pck['type'], pck['source'], pck['dest']) + log_string + " TTL: %s" % pck['ttl'])
             if pck['ttl'] <= 0:
                 self.log("⛔ %s: %s has expired. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
                 return

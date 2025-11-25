@@ -156,10 +156,13 @@ class Plotter(GenericPlotter):
 
     ###################
     def dellink(self,src,dst,style):
-        self.nodeLinks[src].remove((src,dst,style))
-        self.nodeLinks[dst].remove((src,dst,style))
-        self.canvas.delete(self.links[(src,dst,style)])
-        del self.links[(src,dst,style)]
+        if (src,dst,style) in self.nodeLinks[src]:
+            self.nodeLinks[src].remove((src,dst,style))
+        if (src,dst,style) in self.nodeLinks[dst]:
+            self.nodeLinks[dst].remove((src,dst,style))
+        if (src,dst,style) in self.links:
+            self.canvas.delete(self.links[(src,dst,style)])
+            del self.links[(src,dst,style)]
         self.tk.update()
 
     ###################

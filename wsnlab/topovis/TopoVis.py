@@ -318,7 +318,8 @@ class Scene:
         (Scene scripting command)
         Remove a link with the specified style from a pair of nodes
         """
-        self.links.remove((src,dst,style))
+        if (src,dst,style) in self.links:
+            self.links.remove((src,dst,style))
 
     ###################
     @informPlotters

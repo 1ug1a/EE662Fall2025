@@ -36,7 +36,7 @@ SIM_INCLUDE_ROUTERS = False
 SIM_ENERGY_LOSS = False
 SIM_PACKET_LOSS_RATE = 0  # self-explanatory. currently doesn't work great with it active
 SIM_KILL_NODES = True
-REPAIRING_METHOD = 'ALL_ORPHAN' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
+REPAIRING_METHOD = 'FIND_ANOTHER_PARENT' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
 
 ## application properties
 LOGGING = True
