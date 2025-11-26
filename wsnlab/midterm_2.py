@@ -529,6 +529,9 @@ class SensorNode(wsn.Node):
                 self.set_timer("TIMER_NETWORK_REQUEST", 120)
 
             case 'TIMER_NETWORK_REQUEST':
+                if self.ch_addr is not None:
+                    self.kill_timer("TIMER_NETWORK_REQUEST")
+                    return
                 self.log("📡 %s: Resending NETWORK_REQUEST..." % str(self.addr))
                 self.send_network_request(self.root_addr)
                 self.set_timer("TIMER_NETWORK_REQUEST", 120)
@@ -614,9 +617,11 @@ class SensorNode(wsn.Node):
                 
                 case 'NEIGHBOR_SHARE':
                     temp_neighbors = dict(pck['neighbors'])
+                    # don't add yourself to neighbors
                     if self.id in temp_neighbors:
                         temp_neighbors.pop(self.id)
                     for gui, pck in temp_neighbors.items():
+                        # if gui is not in neighbors or you find a better hop count for an existing neighbor
                         if gui not in self.neighbors or pck['hops_away'] < self.neighbors[gui]['hops_away']:
                             pck['arrival_time'] = self.now
                             self.neighbors[gui] = pck
@@ -962,6 +967,10 @@ class SensorNode(wsn.Node):
         #self.log("🚛 %s: Routing %s to destination %s..." % (str(self.addr), pck['type'], str(pck['dest'])))
         #self.log(self.parent_gui)
         #self.log("Descendants: %s" % str(self.descendants))
+
+        ############################## Tree Routing
+        # this entire routing mechanism is ordered in reverse priority
+        # higher priority decisions for pck['next_hop'] override the previous ones
         pck['next_hop'] = None
         if self.role != Roles.ROOT and self.parent_gui is not None:
             #self.log("Routing: parent.")
@@ -978,45 +987,55 @@ class SensorNode(wsn.Node):
                 #self.log("Routing: descendant.")
                 log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
                 pck['next_hop'] = self.neighbors[child_gui]['addr']
-        # add mesh routing using neighbor tables. overrides tree routing (what to do with routers....)
-        # start by collecting all neighbor addresses (only if the neighbor has an addr or ch_addr)
+        
+        ############################## Mesh Routing
+        # add mesh routing using neighbor tables. overrides tree routing
+        # start by collecting all possible neighbor addresses and tying them to their gui
+        # hence "inverted" neighbor table. note that wsn addresses cannot be keys so i convert them to tuples
         temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None and key != self.parent_gui}
         temp_neighbors_inverted.update({(self.neighbors[key]['ch_addr'].net_addr, self.neighbors[key]['ch_addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
 
+        # when the packet is finally routed it "poisons" the last routed location. this probably isn't optimal.
         if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
-            # this restriction is here because frequently-used gateways get poisoned the most
+            # restrict poisoning to multi-hop neighbors, not direct ones
             if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
-                #self.log("Poisoned address: %s" % self.poisoned_addr)
+                self.log("Poisoned address: %s" % self.poisoned_addr)
                 temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
-        # remove non-leaf nodes for routers
+        
+        # remove non-leaf nodes from this dict for routers
         if self.role == Roles.ROUTER:
             temp_neighbors_inverted_keys = list(temp_neighbors_inverted.keys())
             for neighbor_tuple in temp_neighbors_inverted_keys:
                 if self.neighbors[temp_neighbors_inverted[neighbor_tuple]]['role'] == Roles.REGISTERED:
                     temp_neighbors_inverted.pop(neighbor_tuple)
-        
         #self.log("🧭 %s: Inverted neighbor table: %s" % (str(self.addr), dict(temp_neighbors_inverted)))
+        
+        # finally, the rules
         # check for destination cluster in neighbor addresses
-        #self.log([(gui, neighbor['source'], neighbor['hops_away'], neighbor['next_hop']) for gui, neighbor in self.neighbors.items()])
         dest_net_addr = pck['dest'].net_addr
         dest_node_addr = pck['dest'].node_addr
-        # if we find the cluster in neighbor address...
-        #self.log(list(temp_neighbors_inverted.keys()))
+
+        # if we find the cluster in a neighbor address...
         if dest_net_addr in [addr[0] for addr in temp_neighbors_inverted.keys()]:
             neighbor_net_addr = dest_net_addr
+
+            # gather neighbors with that network address
             node_addr_candidates = [addr[1] for addr in temp_neighbors_inverted.keys() if addr[0] == neighbor_net_addr]
             #self.log("Candidates (network %s): %s" % (neighbor_net_addr, list(node_addr_candidates)))
             #self.log([member['source'] for gui, member in self.members.items()])
-            # if destination is directly a neighbor node...
+
+            # if the destination is in the neighbor table at all...
             if dest_node_addr in node_addr_candidates:
                 # make note of the address to use
-                #self.log("Routing: Found exact match.")
                 neighbor_node_addr = dest_node_addr
-            # if you have the destination's clusterhead that's good too
+                #self.log("Routing: Found exact match.")
+
+            # if you have the destination's clusterhead in your neighbor table, that's good too
             elif 254 in node_addr_candidates:
-                #self.log("Routing: Found clusterhead of destination.")
                 neighbor_node_addr = 254
-            # otherwise choose the candidate with the least hops away
+                #self.log("Routing: Found clusterhead of destination.")
+
+            # otherwise choose a qualifying neighbor that is the least hops away
             else:
                 #self.log("Routing: Choosing closest neighbor.")
                 hops_away_table = {}
@@ -1026,10 +1045,13 @@ class SensorNode(wsn.Node):
                 #self.log(hops_away_table)
                 neighbor_node_addr = min(hops_away_table, key=hops_away_table.get)
             
+            # convert the chosen neighbor components into an address. get the id of the neighbor
             neighbor_addr = wsn.Addr(neighbor_net_addr, neighbor_node_addr)
             neighbor_id = temp_neighbors_inverted[(neighbor_net_addr, neighbor_node_addr)]
             #one_hop_neighbor_info = self.neighbors[neighbor_id]
             #self.log(one_hop_neighbor_info)
+
+            # use that neighbor id to get the next hop towards that neighbor
             one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
             if one_hop_neighbor_addr is not None:
                 #self.log("Routing: neighbor.")
