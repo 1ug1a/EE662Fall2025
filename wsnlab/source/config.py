@@ -4,10 +4,10 @@ BROADCAST_NODE_ADDR = 255
 
 
 ## node properties
-NODE_TX_STATIC = True
+NODE_TX_STATIC = True # use base range only for all nodes
 NODE_TX_BASE_RANGE = 100  # base transmission range of nodes
-NODE_TX_POWER_MULTS = [1.58, 1.41, 1.26, 1.12, 1.00, 0.89, 0.79, 0.71, 0.63]
-NODE_TX_POWER_PROBS = [0.01, 0.03, 0.10, 0.22, 0.28, 0.22, 0.10, 0.03, 0.01]
+NODE_TX_POWER_MULTS = [1.3, 1.1, 1.0, 0.9, 0.8]
+NODE_TX_POWER_PROBS = [0.1, 0.2, 0.4, 0.2, 0.1]
 NODE_ARRIVAL_MAX = 300  # max time to wake up
 
 ## simulation properties
@@ -15,10 +15,10 @@ SIM_VISUALIZATION = True  # visualization active
 SIM_TITLE = 'Cluster-Mesh Network'  # title of visualization window
 SIM_TERRAIN_SIZE = (850, 800)  #terrain size
 SIM_SCALE = 1  # scale factor for visualization
-SIM_RANDOM_SEED = 127  # random seed across the entire simulation
+SIM_RANDOM_SEED = None  # random seed across the entire simulation
 SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
-SIM_DURATION = 1500  # simulation duration in seconds
+SIM_DURATION = 1800  # simulation duration in seconds
 SIM_TIME_SCALE = 0.01  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
@@ -29,8 +29,8 @@ SIM_ROUTING_LOGS = True  # output node logs
 SIM_TTL = 32  # time to live for routed packets
 
 ## modes
-SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes
-SIM_INCLUDE_ROUTERS = False  # nominate 
+SIM_SEND_RANDOM_DATA = True  # nodes send random data packets to other nodes. used to track routing
+SIM_INCLUDE_ROUTERS = False  # (unilaterally) nominate nodes requesting join to CH and turn into Router in between 
 SIM_ENERGY_LOSS = False  # enable loss of node energy when sending a packet
 SIM_PACKET_LOSS_RATE = 0.00  # self-explanatory
 SIM_KILL_NODES = True  # kill a random selection of nodes at 600 s
