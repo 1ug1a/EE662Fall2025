@@ -28,6 +28,7 @@ NODE_POS = {}
 ACTIVE_ADDRS = []
 ADDR_NODE_KEY = {}
 ROLE_COUNTS = Counter()
+JOIN_TIMES = []
 
 '''
 Midterm 2 - Elpy Perez
@@ -42,8 +43,11 @@ Implementation Status:
             - ...Removes lease on that address.
             - Chooses smallest available network address.
         - Node availability only tracked using a simple list of booleans for each node address index.
+    - Standardized random number generator.
+        - You can now specify a seed to get repeatable simulations for testing.
 1. Neighbor Tables
-    - Added NEIGHBOR_SHARE packet for multi-hop
+    - Added NEIGHBOR_SHARE packet for multi-hop.
+        - It sends a copy of the node's neighbor table making sure to increment hops away.
 2. Clusterhead Tables (Child Net/Members)
     - Child net table is now known as "descendants".
     - Mostly unchanged aside from organizational stuff.
@@ -51,17 +55,19 @@ Implementation Status:
     - Implemented according to rules set in design document
     - Includes multi-hop routing via next hop, route poisioning to avoid loops
     - Added DATA packet to inspect mesh-tree routing.
+    - Added TTL parameter.
 4. Config Parameters
     - Max cluster size paramenter working nominally.
     - Tx power able to be adjusted but not able to respond to conditions.
-    - Packet loss parameter added, relevant important packets get re-sent
+    - Packet loss parameter added, relevant important packets get re-sent.
 5. Routers
     - Router mode implemented.
     - Added NOMINATION packet to promote joining node to CH w/ address from NETWORK_RESPONSE
     - Node that sends NOMINATION packet turns into a router, can only interact with other routers and CHs
-    - Choice of node to nominate only chooses based on farthest distance
+    - Choice of node to nominate only chooses based on farthest distance. Not optimal.
 6. Recovery
-    - ALL_ORPHAN fully repairs.
+    - Added config.SIM_KILL_NODES to toggle randomly killing nodes at t = 600 s.
+    - ALL_ORPHAN fully repairs (without routers included).
         - But erroneous NETWORK_RESPONSEs seem to get sent.
     - FIND_ANOTHER_PARENT seems to partially work. It does find some new parents.
         - But various combinations of factors make things fail overall.
@@ -69,14 +75,11 @@ Implementation Status:
     - No reorganization other than when performing repairs yet.
 8. Energy Model
     - Rudimentary energy loss system is in place.
-    - Currently, a fixed amount of a node's energy is lost when sending any packet.
-    - If it reaches a threshold, it powers off (and triggers repair).
+    - Currently, a small random amount of a node's energy is lost when sending any packet.
+    - If it reaches a threshold, it powers off (and triggers repair!).
 A. Known Issues
     - When resending network requests the root will keep incrementing the CH address.
         - But they do get freed after a time.
-    - Somehow sending random data can still choose inactive addresses, causing loops.
-        - This is despite the fact that it got removed from the table it chooses from.
-        - See ADDR_NODE_KEY.txt and ACTIVE_ADDRS.txt.
 '''
 
 ###########################################################
@@ -216,7 +219,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        self.log("💕 %s: Sent HEARTBEAT." % (self.ch_addr if self.ch_addr is not None else self.addr))
+        #self.log("💕 %s: Sent HEARTBEAT." % (self.ch_addr if self.ch_addr is not None else self.addr))
         self.send({
             'dest': wsn.BROADCAST_ADDR,
             'type': 'HEARTBEAT',
@@ -493,6 +496,7 @@ class SensorNode(wsn.Node):
                         self.addr = wsn.Addr(1, 254) 
                         self.ch_addr = wsn.Addr(1, 254)
                         ADDR_NODE_KEY[(self.addr.net_addr, self.addr.node_addr)] = self.id
+                        self.join_time = self.now
                         self.root_addr = self.addr
                         self.hops_to_root = 0
                         self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
@@ -536,6 +540,7 @@ class SensorNode(wsn.Node):
                     self.send_random_data(RNG.choice(ACTIVE_ADDRS))
                 self.set_timer('TIMER_RANDOM_DATA', RNG.uniform(20, 50))
 
+            # debug logs at an interval
             case 'TIMER_DEBUG_STATUS':
                 #self.log("🐞 [Node %s]: Neighbors: %s" % (self.id, list((key, pck['addr'], pck['ch_addr']) for (key, pck) in self.neighbors.items())))
                 #self.log("🐞 [Node %s]: Neighbors: %s" % (self.id, list((key, pck['hops_away']) for (key, pck) in self.neighbors.items())))
@@ -547,7 +552,11 @@ class SensorNode(wsn.Node):
                     pass
                 self.set_timer('TIMER_DEBUG_STATUS', 100)
 
+            # debug logs at the end
             case 'TIMER_DEBUG_END':
+                #self.log("A: %s / J: %s" % (self.activation_time, self.join_time))
+                if self.id != ROOT_ID and self.join_time is not None:
+                    JOIN_TIMES.append(self.join_time)
                 if self.id == ROOT_ID:
                     #pprint(ADDR_NODE_KEY)
                     with open('ADDR_NODE_KEY.txt', 'w') as f:
@@ -557,6 +566,10 @@ class SensorNode(wsn.Node):
                         for addr in ADDR_NODE_KEY:
                             f.write(f"{addr}" + '\n')
                     pass
+                if self.id == config.SIM_NODE_COUNT - 1:
+                    AVG_JOIN_TIME = sum(JOIN_TIMES) / (config.SIM_NODE_COUNT - 1)
+                    print("###########################################")
+                    print("Average join time: %s s" % AVG_JOIN_TIME)
 
     ############
     # Receives #
@@ -651,6 +664,7 @@ class SensorNode(wsn.Node):
                             self.send_join_ack(pck['source'])
                             self.send_heartbeat()
                             self.share_neighbors()
+                            self.join_time = self.now
                             self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
                             if self.ch_addr is not None:
                                 self.set_role(Roles.CLUSTER_HEAD)
@@ -741,6 +755,7 @@ class SensorNode(wsn.Node):
                             self.draw_parent()
                             self.log("🔄 %s: Updating network..." % str(self.ch_addr))
                             self.send_network_update()
+                            self.join_time = self.now
                             self.share_neighbors()
                             self.send_heartbeat()
                             self.join_request_senders = {}
@@ -748,7 +763,7 @@ class SensorNode(wsn.Node):
                 case 'ORPHAN_NOTICE':
                     if self.role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.ROOT]:
                         self.log(pck['source'])
-                        self.log(self.neighbors)
+                        #self.log(self.neighbors)
                         if 'ch_addr' in self.neighbors[self.parent_gui]:
                             if self.neighbors[self.parent_gui]['ch_addr'] is not None:
                                 if pck['source'] == self.neighbors[self.parent_gui]['ch_addr']:
@@ -1072,6 +1087,7 @@ class SensorNode(wsn.Node):
         if self.role != Roles.UNDISCOVERED:
             self.kill_all_timers()
         self.set_role(Roles.UNREGISTERED)
+        #self.log("Became unregistered.")
         self.clear_data(keep_ch_addr)
         self.wake_up()
         self.send_probe()
@@ -1079,10 +1095,11 @@ class SensorNode(wsn.Node):
 
     def lose_energy(self):
         if config.SIM_ENERGY_LOSS:
-            self.energy_J -= 300 # large value for demonstration
-            if self.energy_J < 0.10 * 21600:
-                self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
-                self.die()
+            if self.role != Roles.ROOT:
+                self.energy_J -= RNG.uniform(1,10) # large value for demonstration
+                if self.energy_J < 0.10 * 21600:
+                    self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
+                    self.die()
 
     def die(self):
         self.sleep()
