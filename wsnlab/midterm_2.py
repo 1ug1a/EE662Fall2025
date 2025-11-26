@@ -62,9 +62,9 @@ Implementation Status:
     - Choice of node to nominate only chooses based on farthest distance
 6. Recovery
     - ALL_ORPHAN fully repairs.
-    - FIND_ANOTHER_PARENT seems to partially work.
-        - But something causes NETWORK_RESPONSEs to fail.
-        - It might be the network not properly updating descendants?
+        - But erroneous NETWORK_RESPONSEs seem to get sent.
+    - FIND_ANOTHER_PARENT seems to partially work. It does find some new parents.
+        - But various combinations of factors make things fail overall.
 7. Maintenance/Optimization
     - No reorganization other than when performing repairs yet.
 8. Energy Model
@@ -72,6 +72,8 @@ Implementation Status:
     - Currently, a fixed amount of a node's energy is lost when sending any packet.
     - If it reaches a threshold, it powers off (and triggers repair).
 A. Known Issues
+    - When resending network requests the root will keep incrementing the CH address.
+        - But they do get freed after a time.
     - Somehow sending random data can still choose inactive addresses, causing loops.
         - This is despite the fact that it got removed from the table it chooses from.
         - See ADDR_NODE_KEY.txt and ACTIVE_ADDRS.txt.
@@ -141,7 +143,7 @@ class SensorNode(wsn.Node):
 
         self.sleep()
 
-    def clear_data(self):
+    def clear_data(self, keep_ch_addr = False):
         if self.addr is not None and self.addr in ACTIVE_ADDRS:
             ACTIVE_ADDRS.remove(self.addr)
         ADDR_NODE_KEY.pop(_addr_to_tuple(self.addr), None)
@@ -150,7 +152,7 @@ class SensorNode(wsn.Node):
         self.erase_parent()
 
         self.addr = None
-        self.ch_addr = None
+        self.ch_addr = None if keep_ch_addr == False else self.ch_addr
         self.parent_gui = None
         self.root_addr = None
 
@@ -214,7 +216,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        #self.log("💕 %s: Sent HEARTBEAT." % (self.ch_addr if self.ch_addr is not None else self.addr))
+        self.log("💕 %s: Sent HEARTBEAT." % (self.ch_addr if self.ch_addr is not None else self.addr))
         self.send({
             'dest': wsn.BROADCAST_ADDR,
             'type': 'HEARTBEAT',
@@ -525,7 +527,7 @@ class SensorNode(wsn.Node):
                 self.set_timer("TIMER_NETWORK_REQUEST", 50)
 
             case 'TIMER_NETWORK_REQUEST':
-                self.log("↪️ %s: Resending NETWORK_REQUEST..." % str(self.addr))
+                self.log("📡 %s: Resending NETWORK_REQUEST..." % str(self.addr))
                 self.send_network_request(self.root_addr)
                 self.set_timer("TIMER_NETWORK_REQUEST", 50)
 
@@ -605,6 +607,7 @@ class SensorNode(wsn.Node):
                         temp_neighbors.pop(self.id)
                     for gui, pck in temp_neighbors.items():
                         if gui not in self.neighbors or pck['hops_away'] < self.neighbors[gui]['hops_away']:
+                            pck['arrival_time'] = self.now
                             self.neighbors[gui] = pck
                 
                 case 'JOIN_REQUEST':
@@ -613,14 +616,16 @@ class SensorNode(wsn.Node):
                             # get smallest available address by going through node_availability until false
                             #self.log("📝 %s: Node availability: %s" % (str(self.addr), dict(enumerate(self.node_vacancies))))
                             chosen_node_addr = min([idx for idx, val in enumerate(self.node_vacancies) if val == False])
-                            self.send_join_response(pck['gui'], 'ACCEPT', wsn.Addr(self.ch_addr.net_addr, chosen_node_addr))
-                            self.node_vacancies[chosen_node_addr] = True
+                            if pck['gui'] not in self.join_request_senders and pck['gui'] != self.parent_gui:
+                                self.join_request_senders[pck['gui']] = pck
+                                self.send_join_response(pck['gui'], 'ACCEPT', wsn.Addr(self.ch_addr.net_addr, chosen_node_addr))
+                                self.node_vacancies[chosen_node_addr] = True
                         else:
                             self.send_join_response(pck['gui'], 'REJECT')
                     elif self.role == Roles.REGISTERED:
                         # collect join request senders to avoid multiple requests from same node
                         self.log("📦 %s: Received JOIN_REQUEST from Node %s" % (str(self.addr), str(pck['gui'])))
-                        if pck['gui'] not in self.join_request_senders:
+                        if pck['gui'] not in self.join_request_senders and pck['gui'] != self.parent_gui:
                             self.log("➕ %s: Adding Node %s to join request senders. Waiting for more..." % (str(self.addr), str(pck['gui'])))
                             #self.log(str(self.join_request_senders))
                             self.join_request_senders[pck['gui']] = pck
@@ -633,25 +638,28 @@ class SensorNode(wsn.Node):
                         self.send_join_response(pck['gui'], 'REJECT')
                 
                 case 'JOIN_RESPONSE':
-                    if self.role == Roles.UNREGISTERED:
-                        if pck['dest_gui'] == self.id:
-                            if pck['response'] == 'ACCEPT':
-                                self.addr = pck['addr']
-                                self.parent_gui = pck['gui']
-                                self.root_addr = pck['root_addr']
-                                self.hops_to_root = pck['hops_to_root']
-                                self.draw_parent()
-                                self.kill_timer('TIMER_JOIN_REQUEST_SEND')
-                                if config.SIM_SEND_RANDOM_DATA:
-                                    self.set_timer('TIMER_RANDOM_DATA', RNG.uniform(20, 50))
-                                self.send_join_ack(pck['source'])
-                                self.send_heartbeat()
-                                self.share_neighbors()
-                                self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
+                    if pck['dest_gui'] == self.id:
+                        if pck['response'] == 'ACCEPT' and self.parent_gui is None:
+                            self.addr = pck['addr']
+                            self.parent_gui = pck['gui']
+                            self.root_addr = pck['root_addr']
+                            self.hops_to_root = pck['hops_to_root']
+                            self.draw_parent()
+                            self.kill_timer('TIMER_JOIN_REQUEST_SEND')
+                            if config.SIM_SEND_RANDOM_DATA:
+                                self.set_timer('TIMER_RANDOM_DATA', RNG.uniform(20, 50))
+                            self.send_join_ack(pck['source'])
+                            self.send_heartbeat()
+                            self.share_neighbors()
+                            self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
+                            if self.ch_addr is not None:
+                                self.set_role(Roles.CLUSTER_HEAD)
+                                self.send_network_update()
+                            else:
                                 self.set_role(Roles.REGISTERED)
-                            elif pck['response'] == 'REJECT':
-                                self.log("🚫 [Node %s]: Node %s is full. Removing from candidate parents. Remaining: %s" % (str(self.id), str(pck['gui']), list(self.candidate_parents)))
-                                self.candidate_parents.pop(pck['gui'])
+                        elif pck['response'] == 'REJECT':
+                            self.log("🚫 [Node %s]: Node %s is full. Removing from candidate parents. Remaining: %s" % (str(self.id), str(pck['gui']), list(self.candidate_parents)))
+                            self.candidate_parents.pop(pck['gui'])
                 
                 case 'JOIN_ACK':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
@@ -739,9 +747,12 @@ class SensorNode(wsn.Node):
                 
                 case 'ORPHAN_NOTICE':
                     if self.role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.ROOT]:
-                        if pck['source'] == self.neighbors[self.parent_gui]['ch_addr'] or pck['source'] == self.neighbors[self.parent_gui]['addr']:
-                            self.repair()
-                    
+                        self.log(pck['source'])
+                        self.log(self.neighbors)
+                        if 'ch_addr' in self.neighbors[self.parent_gui]:
+                            if self.neighbors[self.parent_gui]['ch_addr'] is not None:
+                                if pck['source'] == self.neighbors[self.parent_gui]['ch_addr']:
+                                    self.repair()
 
                 case 'DATA':
                     self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
@@ -756,7 +767,8 @@ class SensorNode(wsn.Node):
         min_hops_to_root = 99999
         min_hop_gui = 99999
         #self.check_neighbors()
-        #self.log(self.neighbors)
+        #self.log([(gui, candidate['hops_to_root']) for gui, candidate in self.candidate_parents.items()])
+        #self.log([(gui, candidate['hops_to_root']) for gui, candidate in self.neighbors.items()])
         for gui in self.candidate_parents.keys():
             if self.neighbors[gui]['role'] not in [Roles.UNREGISTERED, Roles.ROUTER]:
                 if self.neighbors[gui]['hops_to_root'] < min_hops_to_root or (self.neighbors[gui]['hops_to_root'] == min_hops_to_root and gui < min_hop_gui):
@@ -815,6 +827,7 @@ class SensorNode(wsn.Node):
         if pck['gui'] not in self.descendants.keys() or pck['gui'] not in self.descendants:
             if pck['gui'] not in self.candidate_parents:
                 self.candidate_parents[pck['gui']] = pck
+                #self.log(self.log([(gui, candidate['hops_to_root']) for gui, candidate in self.candidate_parents.items()]))
 
     def check_neighbors(self):
         """Checks neighbors if they are still alive or not. If not, updates necessary tables.
@@ -828,7 +841,7 @@ class SensorNode(wsn.Node):
         childs_updated = False
         parent_dead = False
         will_be_removed = []
-        #self.log(self.neighbors)
+        #self.log([(gui, neighbor['hops_away'], neighbor['arrival_time']) for gui, neighbor in self.neighbors.items()])
         #self.log(self.candidate_parents)
         for gui, pck in self.neighbors.items():
             if self.now - pck['arrival_time'] > 3 * config.HEARTBEAT_INTERVAL:
@@ -840,6 +853,7 @@ class SensorNode(wsn.Node):
                     childs_updated = True
                 if gui in self.candidate_parents.keys():
                     del self.candidate_parents[gui]
+        #self.log("To be removed: %s" % will_be_removed)
         for gui in will_be_removed:
             del self.neighbors[gui]
         if self.role != Roles.UNREGISTERED:
@@ -847,7 +861,7 @@ class SensorNode(wsn.Node):
                 #self.log("Parent lost. Repair imminent.")
                 self.repair()
             else:
-                #self.send_heartbeat()
+                self.send_heartbeat()
                 #self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
                 # ^ this (from repairing_network.py) was creating additional duplicate heartbeats and lagging the simulation
                 if childs_updated:
@@ -888,8 +902,9 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        self.send_orphan_notice()
-        self.become_unregistered()
+        if self.role == Roles.CLUSTER_HEAD:
+            self.send_orphan_notice()
+            self.become_unregistered(keep_ch_addr=True)
 
     def repair_find_another_parent(self):
         """If it has potential parent in its table, tries to connect any of them. Otherwise becomes unregistered.
@@ -909,7 +924,7 @@ class SensorNode(wsn.Node):
         if len(self.candidate_parents) != 0:
             self.kill_all_timers()
             self.erase_parent()
-            self.role = Roles.UNREGISTERED
+            self.become_unregistered(keep_ch_addr = True)
             self.select_and_join()
         else:
             self.send_orphan_notice()
@@ -946,7 +961,7 @@ class SensorNode(wsn.Node):
         # add mesh routing using neighbor tables. overrides tree routing (what to do with routers....)
         # start by collecting all neighbor addresses (only if the neighbor has an addr or ch_addr)
         temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None and key != self.parent_gui}
-        temp_neighbors_inverted.update({(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
+        temp_neighbors_inverted.update({(self.neighbors[key]['ch_addr'].net_addr, self.neighbors[key]['ch_addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
 
         if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
             # this restriction is here because frequently-used gateways get poisoned the most
@@ -1052,12 +1067,12 @@ class SensorNode(wsn.Node):
                     self.set_timer('TIMER_EXPORT_CH_CSV', config.EXPORT_CH_CSV_INTERVAL)
                     self.set_timer('TIMER_EXPORT_NEIGHBOR_CSV', config.EXPORT_NEIGHBOR_CSV_INTERVAL)
 
-    def become_unregistered(self):
+    def become_unregistered(self, keep_ch_addr = False):
         self.sleep()
         if self.role != Roles.UNDISCOVERED:
             self.kill_all_timers()
         self.set_role(Roles.UNREGISTERED)
-        self.clear_data()
+        self.clear_data(keep_ch_addr)
         self.wake_up()
         self.send_probe()
         self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)

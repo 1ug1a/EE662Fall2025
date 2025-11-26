@@ -31,12 +31,12 @@ SIM_ROUTING_LOGS = True
 SIM_TTL = 32
 
 ## modes
-SIM_SEND_RANDOM_DATA = True  # nodes send random data packets to other nodes
+SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes
 SIM_INCLUDE_ROUTERS = False
 SIM_ENERGY_LOSS = False
 SIM_PACKET_LOSS_RATE = 0  # self-explanatory. currently doesn't work great with it active
 SIM_KILL_NODES = True
-REPAIRING_METHOD = 'FIND_ANOTHER_PARENT' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
+REPAIRING_METHOD = 'ALL_ORPHAN' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
 
 ## application properties
 LOGGING = True
