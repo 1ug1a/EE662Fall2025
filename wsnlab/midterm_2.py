@@ -22,6 +22,9 @@ with open('EE662output.txt', 'w') as f:
     print("###########################################")
 
 ROOT_ID = RNG.randint(0, config.SIM_NODE_COUNT)
+NODE_IDS_WITHOUT_ROOT = list(range(config.SIM_NODE_COUNT))
+NODE_IDS_WITHOUT_ROOT.remove(ROOT_ID)
+NODES_TO_KILL = RNG.sample(NODE_IDS_WITHOUT_ROOT, config.SIM_NODES_TO_KILL)
 
 # diagnostics
 NODE_POS = {}
@@ -33,7 +36,7 @@ JOIN_TIMES = []
 '''
 Midterm 2 - Elpy Perez
 
-Implementation Status:
+Implementation Status (not up-to-date):
 0. Overall Changes (compared to previously provided code)
     - Complete reorganizion
     - Addressing changed to match design: counting from 1 onwards
@@ -77,6 +80,12 @@ Implementation Status:
     - Rudimentary energy loss system is in place.
     - Currently, a small random amount of a node's energy is lost when sending any packet.
     - If it reaches a threshold, it powers off (and triggers repair!).
+'''
+
+'''
+Questions I'm having about recovery with routers involved:
+    - How exactly should routers behave during recovery?
+        - Some routers end up 'loose'. Should those just become plain registered nodes again?
 '''
 
 ###########################################################
@@ -125,7 +134,7 @@ class SensorNode(wsn.Node):
         # tables and trackers
         self.activation_time = None
         self.join_time = None
-        self.energy_J = 21600
+        self.energy_mAh = 21600
         self.poisoned_addr = None
         
         self.neighbors = {}
@@ -185,9 +194,9 @@ class SensorNode(wsn.Node):
         """
         self.set_timer('TIMER_ACTIVATE', self.arrival)
 
-        if config.SIM_KILL_NODES == True and self.id != ROOT_ID:
-            if RNG.random() < 0.15:
-                self.set_timer('TIMER_DIE', 600)
+        if config.SIM_KILL_NODES == True:
+            if self.id in NODES_TO_KILL:
+                self.set_timer('TIMER_DIE', config.SIM_KILL_TIME)
 
     ###########
     # Packets #
@@ -206,7 +215,7 @@ class SensorNode(wsn.Node):
             'type': 'PROBE',
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_heartbeat(self):
         """Sends a heartbeat message to announce node's presence to neighbors. (1-hop)
@@ -228,7 +237,7 @@ class SensorNode(wsn.Node):
             'hops_to_root': self.hops_to_root,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_join_request(self, dest):
         """Sends a join request to the destination address to join the network. (1-hop)
@@ -246,7 +255,7 @@ class SensorNode(wsn.Node):
             'ttl': config.SIM_TTL,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_join_response(self, dest, resp, addr=wsn.Addr(0,0)):
         """Sends a join reply message to register the node that requested to join after being promoted to clusterhead.
@@ -276,7 +285,7 @@ class SensorNode(wsn.Node):
             'hops_to_root': self.hops_to_root+1,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_join_ack(self, dest):
         """Sending join acknowledgement message to given destination address. (1-hop)
@@ -294,7 +303,7 @@ class SensorNode(wsn.Node):
             'gui': self.id,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def share_neighbors(self):
         """Sends a node's neighbors to broadcast address.
@@ -322,7 +331,7 @@ class SensorNode(wsn.Node):
             'neighbors': temp_neighbors,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_nomination(self, dest, addr):
         self.log("✨ %s: Sent NOMINATION to Node %s, address assigned %s" % (str(self.addr), str(dest), str(addr)))
@@ -337,7 +346,7 @@ class SensorNode(wsn.Node):
             'hops_to_root': self.hops_to_root+1,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_network_request(self, dest):
         """Sends a network request message to given destination address. (Multi-hop)
@@ -347,7 +356,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        self.log("📡 %s: Sending NETWORK_REQUEST to destination %s" % (str(self.addr), str(dest)))
+        self.log("📡 %s: Sending NETWORK_REQUEST to destination %s, role: %s" % (str(self.addr), str(dest), str(self.role)))
         self.route_and_forward({
             'dest': dest,
             'type': 'NETWORK_REQUEST',
@@ -392,6 +401,7 @@ class SensorNode(wsn.Node):
             temp_descendants.extend(networks)
         
         #self.log("🐞 [DEBUG]: %s: Role: %s / Parent ID: %s / Neighbors: %s" % (self.addr, self.role, self.parent_gui, list(self.neighbors.keys())))
+        addr = None
         if self.neighbors[self.parent_gui]['ch_addr'] is not None:
             addr = self.neighbors[self.parent_gui]['ch_addr']
         elif self.neighbors[self.parent_gui]['addr'] is not None:
@@ -405,7 +415,7 @@ class SensorNode(wsn.Node):
             'descendants': temp_descendants,
             'created': self.now
         })
-        self.lose_energy()
+        self.lose_energy_tx()
 
     def send_cluster_alive(self):
         #self.log("👋 %s: Sending CLUSTER_ALIVE to root." % (str(self.ch_addr)))
@@ -416,7 +426,7 @@ class SensorNode(wsn.Node):
             'gui': self.id,
             'ttl': config.SIM_TTL,
             'created': self.now
-        })
+        }, use_mesh = False)
 
     def send_orphan_notice(self):
         """Sends i am orphan message to inform its neighbors.
@@ -430,7 +440,8 @@ class SensorNode(wsn.Node):
         self.send({
             'dest': wsn.BROADCAST_ADDR,
             'type': 'ORPHAN_NOTICE',
-            'source': self.ch_addr
+            'source': self.ch_addr if self.ch_addr is not None else self.addr,
+            'created': self.now
         })
 
     def send_random_data(self, dest):
@@ -526,7 +537,7 @@ class SensorNode(wsn.Node):
 
             case 'TIMER_JOIN_REQUEST_RECV':  # after collecting join requests for some time, send a network request to root
                 self.send_network_request(self.root_addr)
-                self.set_timer("TIMER_NETWORK_REQUEST", 120)
+                self.set_timer("TIMER_NETWORK_REQUEST", 120+round(self.id/100)*120)
 
             case 'TIMER_NETWORK_REQUEST':
                 if self.ch_addr is not None:
@@ -583,6 +594,7 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
+        self.lose_energy_rx()
         if RNG.random() < config.SIM_PACKET_LOSS_RATE:
             packet_type_log_filter = [
                 'PROBE',
@@ -676,7 +688,8 @@ class SensorNode(wsn.Node):
                                 self.set_role(Roles.REGISTERED)
                         elif pck['response'] == 'REJECT':
                             self.log("🚫 [Node %s]: Node %s is full. Removing from candidate parents. Remaining: %s" % (str(self.id), str(pck['gui']), list(self.candidate_parents)))
-                            self.candidate_parents.pop(pck['gui'])
+                            if pck['gui'] in self.candidate_parents:
+                                self.candidate_parents.pop(pck['gui'])
                 
                 case 'JOIN_ACK':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
@@ -767,18 +780,27 @@ class SensorNode(wsn.Node):
                 
                 case 'ORPHAN_NOTICE':
                     if self.role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.ROOT]:
-                        self.log(pck['source'])
-                        #self.log(self.neighbors)
-                        if 'ch_addr' in self.neighbors[self.parent_gui]:
-                            if self.neighbors[self.parent_gui]['ch_addr'] is not None:
-                                if pck['source'] == self.neighbors[self.parent_gui]['ch_addr']:
-                                    self.repair()
+                        self.log("📣 %s: Received ORPHAN_NOTICE from %s. Checking if sent by parent %s" % (str(self.addr), str(pck['source']), str(self.parent_gui)))
+                        if self.parent_gui in self.neighbors:
+                            self.log(self.neighbors[self.parent_gui])
+                            if 'ch_addr' in self.neighbors[self.parent_gui]:
+                                if self.neighbors[self.parent_gui]['ch_addr'] is not None:
+                                    if pck['source'] == self.neighbors[self.parent_gui]['ch_addr']:
+                                        self.repair()
+                                        return
+                            if 'addr' in self.neighbors[self.parent_gui]:
+                                if self.neighbors[self.parent_gui]['addr'] is not None:
+                                    if pck['source'] == self.neighbors[self.parent_gui]['addr']:
+                                        self.repair()
 
                 case 'DATA':
                     self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
         else:
             if self.addr is not None:
-                self.route_and_forward(pck)
+                if pck['type'] == "CLUSTER_ALIVE":
+                    self.route_and_forward(pck, use_mesh = False)
+                else:
+                    self.route_and_forward(pck)
 
     ###########
     # Actions #
@@ -910,13 +932,10 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        if self.role in [Roles.REGISTERED, Roles.ROUTER]:
-            self.become_unregistered()
-        else:
-            if config.REPAIRING_METHOD == 'ALL_ORPHAN':
-                self.repair_all_orphan()
-            elif config.REPAIRING_METHOD == 'FIND_ANOTHER_PARENT':
-                self.repair_find_another_parent()
+        if config.REPAIRING_METHOD == 'ALL_ORPHAN':
+            self.repair_all_orphan()
+        elif config.REPAIRING_METHOD == 'FIND_ANOTHER_PARENT':
+            self.repair_find_another_parent()
 
     def repair_all_orphan(self):
         """Becomes unregistered and sends I am orphan message.
@@ -926,9 +945,9 @@ class SensorNode(wsn.Node):
         Returns:
 
         """
-        if self.role == Roles.CLUSTER_HEAD:
+        if self.role in [Roles.CLUSTER_HEAD, Roles.ROUTER]:
             self.send_orphan_notice()
-            self.become_unregistered(keep_ch_addr=True)
+        self.become_unregistered(keep_ch_addr=True)
 
     def repair_find_another_parent(self):
         """If it has potential parent in its table, tries to connect any of them. Otherwise becomes unregistered.
@@ -955,7 +974,7 @@ class SensorNode(wsn.Node):
             self.send_orphan_notice()
             self.become_unregistered()
 
-    def route_and_forward(self, pck):
+    def route_and_forward(self, pck, use_mesh = True):
         """Routes and forwards a multi-hop message according to cluster-mesh rules.
 
         Args:
@@ -967,6 +986,8 @@ class SensorNode(wsn.Node):
         #self.log("🚛 %s: Routing %s to destination %s..." % (str(self.addr), pck['type'], str(pck['dest'])))
         #self.log(self.parent_gui)
         #self.log("Descendants: %s" % str(self.descendants))
+
+        mesh_used = False
 
         ############################## Tree Routing
         # this entire routing mechanism is ordered in reverse priority
@@ -992,82 +1013,90 @@ class SensorNode(wsn.Node):
         # add mesh routing using neighbor tables. overrides tree routing
         # start by collecting all possible neighbor addresses and tying them to their gui
         # hence "inverted" neighbor table. note that wsn addresses cannot be keys so i convert them to tuples
-        temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None and key != self.parent_gui}
-        temp_neighbors_inverted.update({(self.neighbors[key]['ch_addr'].net_addr, self.neighbors[key]['ch_addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
+        if config.SIM_MESH_ROUTING == True and use_mesh == True:
+            temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None and key != self.parent_gui}
+            temp_neighbors_inverted.update({(self.neighbors[key]['ch_addr'].net_addr, self.neighbors[key]['ch_addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
 
-        # when the packet is finally routed it "poisons" the last routed location. this probably isn't optimal.
-        if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
-            # restrict poisoning to multi-hop neighbors, not direct ones
-            if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
-                self.log("Poisoned address: %s" % self.poisoned_addr)
-                temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
-        
-        # remove non-leaf nodes from this dict for routers
-        if self.role == Roles.ROUTER:
-            temp_neighbors_inverted_keys = list(temp_neighbors_inverted.keys())
-            for neighbor_tuple in temp_neighbors_inverted_keys:
-                if self.neighbors[temp_neighbors_inverted[neighbor_tuple]]['role'] == Roles.REGISTERED:
-                    temp_neighbors_inverted.pop(neighbor_tuple)
-        #self.log("🧭 %s: Inverted neighbor table: %s" % (str(self.addr), dict(temp_neighbors_inverted)))
-        
-        # finally, the rules
-        # check for destination cluster in neighbor addresses
-        dest_net_addr = pck['dest'].net_addr
-        dest_node_addr = pck['dest'].node_addr
-
-        # if we find the cluster in a neighbor address...
-        if dest_net_addr in [addr[0] for addr in temp_neighbors_inverted.keys()]:
-            neighbor_net_addr = dest_net_addr
-
-            # gather neighbors with that network address
-            node_addr_candidates = [addr[1] for addr in temp_neighbors_inverted.keys() if addr[0] == neighbor_net_addr]
-            #self.log("Candidates (network %s): %s" % (neighbor_net_addr, list(node_addr_candidates)))
-            #self.log([member['source'] for gui, member in self.members.items()])
-
-            # if the destination is in the neighbor table at all...
-            if dest_node_addr in node_addr_candidates:
-                # make note of the address to use
-                neighbor_node_addr = dest_node_addr
-                #self.log("Routing: Found exact match.")
-
-            # if you have the destination's clusterhead in your neighbor table, that's good too
-            elif 254 in node_addr_candidates:
-                neighbor_node_addr = 254
-                #self.log("Routing: Found clusterhead of destination.")
-
-            # otherwise choose a qualifying neighbor that is the least hops away
-            else:
-                #self.log("Routing: Choosing closest neighbor.")
-                hops_away_table = {}
-                for node in node_addr_candidates:
-                    gui = temp_neighbors_inverted[(dest_net_addr, node)]
-                    hops_away_table[node] = self.neighbors[gui]['hops_away']
-                #self.log(hops_away_table)
-                neighbor_node_addr = min(hops_away_table, key=hops_away_table.get)
+            # when the packet is finally routed it "poisons" the last routed location. this probably isn't optimal.
+            if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
+                # restrict poisoning to multi-hop neighbors, not direct ones
+                if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
+                    self.log("Poisoned address: %s" % self.poisoned_addr)
+                    temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
             
-            # convert the chosen neighbor components into an address. get the id of the neighbor
-            neighbor_addr = wsn.Addr(neighbor_net_addr, neighbor_node_addr)
-            neighbor_id = temp_neighbors_inverted[(neighbor_net_addr, neighbor_node_addr)]
-            #one_hop_neighbor_info = self.neighbors[neighbor_id]
-            #self.log(one_hop_neighbor_info)
+            # remove non-leaf nodes from this dict for routers
+            if self.role == Roles.ROUTER:
+                temp_neighbors_inverted_keys = list(temp_neighbors_inverted.keys())
+                for neighbor_tuple in temp_neighbors_inverted_keys:
+                    if self.neighbors[temp_neighbors_inverted[neighbor_tuple]]['role'] == Roles.REGISTERED:
+                        temp_neighbors_inverted.pop(neighbor_tuple)
+            elif self.role == Roles.REGISTERED:
+                temp_neighbors_inverted_keys = list(temp_neighbors_inverted.keys())
+                for neighbor_tuple in temp_neighbors_inverted_keys:
+                    if self.neighbors[temp_neighbors_inverted[neighbor_tuple]]['role'] in [Roles.ROUTER]:
+                        temp_neighbors_inverted.pop(neighbor_tuple)
+            #self.log("🧭 %s: Inverted neighbor table: %s" % (str(self.addr), dict(temp_neighbors_inverted)))
+            
+            # finally, the rules
+            # check for destination cluster in neighbor addresses
+            dest_net_addr = pck['dest'].net_addr
+            dest_node_addr = pck['dest'].node_addr
 
-            # use that neighbor id to get the next hop towards that neighbor
-            one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
-            if one_hop_neighbor_addr is not None:
-                #self.log("Routing: neighbor.")
-                pck['next_hop'] = one_hop_neighbor_addr
-                log_string = "next hop: %s towards neighbor %s" % (str(one_hop_neighbor_addr), str(neighbor_addr))
+            # if we find the cluster in a neighbor address...
+            if dest_net_addr in [addr[0] for addr in temp_neighbors_inverted.keys()]:
+                neighbor_net_addr = dest_net_addr
+
+                # gather neighbors with that network address
+                node_addr_candidates = [addr[1] for addr in temp_neighbors_inverted.keys() if addr[0] == neighbor_net_addr]
+                #self.log("Candidates (network %s): %s" % (neighbor_net_addr, list(node_addr_candidates)))
+                #self.log([member['source'] for gui, member in self.members.items()])
+
+                # if the destination is in the neighbor table at all...
+                if dest_node_addr in node_addr_candidates:
+                    # make note of the address to use
+                    neighbor_node_addr = dest_node_addr
+                    #self.log("Routing: Found exact match.")
+
+                # if you have the destination's clusterhead in your neighbor table, that's good too
+                elif 254 in node_addr_candidates:
+                    neighbor_node_addr = 254
+                    #self.log("Routing: Found clusterhead of destination.")
+
+                # otherwise choose a qualifying neighbor that is the least hops away
+                else:
+                    #self.log("Routing: Choosing closest neighbor.")
+                    hops_away_table = {}
+                    for node in node_addr_candidates:
+                        gui = temp_neighbors_inverted[(dest_net_addr, node)]
+                        hops_away_table[node] = self.neighbors[gui]['hops_away']
+                    #self.log(hops_away_table)
+                    neighbor_node_addr = min(hops_away_table, key=hops_away_table.get)
                 
+                # convert the chosen neighbor components into an address. get the id of the neighbor
+                neighbor_addr = wsn.Addr(neighbor_net_addr, neighbor_node_addr)
+                neighbor_id = temp_neighbors_inverted[(neighbor_net_addr, neighbor_node_addr)]
+                #one_hop_neighbor_info = self.neighbors[neighbor_id]
+                #self.log(one_hop_neighbor_info)
+
+                # use that neighbor id to get the next hop towards that neighbor
+                one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
+                if one_hop_neighbor_addr is not None:
+                    #self.log("Routing: neighbor.")
+                    pck['next_hop'] = one_hop_neighbor_addr
+                    mesh_used = True
+                    log_string = "next hop: %s towards neighbor %s" % (str(one_hop_neighbor_addr), str(neighbor_addr))
+                    
         if pck['next_hop'] is not None:
-            self.poisoned_addr = pck['next_hop']
+            if mesh_used == True:
+                self.poisoned_addr = pck['next_hop']
             pck['ttl'] -= 1
-            if config.SIM_ROUTING_LOGS == True and pck['type'] != 'CLUSTER_ALIVE':
+            if config.SIM_ROUTING_LOGS == True:# and pck['type'] != 'CLUSTER_ALIVE':
                 self.log("🚛 %s: %s from %s to %s, " % (self.addr, pck['type'], pck['source'], pck['dest']) + log_string + " TTL: %s" % pck['ttl'])
             if pck['ttl'] <= 0:
                 self.log("⛔ %s: %s has expired. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
                 return
             self.send(pck)
-            self.lose_energy()
+            self.lose_energy_tx()
         else:
             self.log("⛔ %s: %s could not be routed. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
 
@@ -1114,17 +1143,25 @@ class SensorNode(wsn.Node):
         if self.role != Roles.UNDISCOVERED:
             self.kill_all_timers()
         self.set_role(Roles.UNREGISTERED)
-        #self.log("Became unregistered.")
+        self.log("Became unregistered. %s" % ("Keeping CH address." if keep_ch_addr else "Clearing CH address."))
         self.clear_data(keep_ch_addr)
         self.wake_up()
         self.send_probe()
         self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
 
-    def lose_energy(self):
+    def lose_energy_tx(self):
         if config.SIM_ENERGY_LOSS:
             if self.role != Roles.ROOT:
-                self.energy_J -= RNG.uniform(1,10) # large value for demonstration
-                if self.energy_J < 0.10 * 21600:
+                self.energy_mAh -= 17
+                if self.energy_mAh < 0.10 * 2000:
+                    self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
+                    self.die()
+
+    def lose_energy_rx(self):
+        if config.SIM_ENERGY_LOSS:
+            if self.role != Roles.ROOT:
+                self.energy_mAh -= 18
+                if self.energy_mAh < 0.10 * 2000:
                     self.log("🔌 %s: Ran out of energy. Turning off..." % str(self.addr))
                     self.die()
 
