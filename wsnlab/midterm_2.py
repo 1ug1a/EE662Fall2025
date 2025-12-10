@@ -644,7 +644,11 @@ class SensorNode(wsn.Node):
                             # get smallest available address by going through node_availability until false
                             #self.log("📝 %s: Node availability: %s" % (str(self.addr), dict(enumerate(self.node_vacancies))))
                             chosen_node_addr = min([idx for idx, val in enumerate(self.node_vacancies) if val == False])
-                            if pck['gui'] not in self.join_request_senders and pck['gui'] != self.parent_gui:
+                            if pck['gui'] != self.parent_gui:
+                                if pck['gui'] not in self.join_request_senders:
+                                    pck['attempts'] = 0
+                                else:
+                                    pck['attempts'] = self.join_request_senders[pck['gui']]['attempts'] + 1
                                 self.join_request_senders[pck['gui']] = pck
                                 self.send_join_response(pck['gui'], 'ACCEPT', wsn.Addr(self.ch_addr.net_addr, chosen_node_addr))
                                 self.node_vacancies[chosen_node_addr] = True
@@ -653,17 +657,21 @@ class SensorNode(wsn.Node):
                     elif self.role == Roles.REGISTERED:
                         # collect join request senders to avoid multiple requests from same node
                         self.log("📦 %s: Received JOIN_REQUEST from Node %s" % (str(self.addr), str(pck['gui'])))
-                        if pck['gui'] not in self.join_request_senders and pck['gui'] != self.parent_gui:
-                            self.log("➕ %s: Adding Node %s to join request senders. Waiting for more..." % (str(self.addr), str(pck['gui'])))
+                        if pck['gui'] != self.parent_gui:
+                            if pck['gui'] not in self.join_request_senders:
+                                pck['attempts'] = 0
+                                self.kill_timer('TIMER_JOIN_REQUEST_RECV') # reset timer
+                                self.set_timer('TIMER_JOIN_REQUEST_RECV', 5)
+                                self.log("➕ %s: Adding Node %s to join request senders. Waiting for more..." % (str(self.addr), str(pck['gui'])))
+                            else:
+                                pck['attempts'] = self.join_request_senders[pck['gui']]['attempts'] + 1
+                                self.log("➖ %s: Node %s already in join request senders. Ignoring. Attempts: %s" % (str(self.addr), str(pck['gui']), pck['attempts']))
                             #self.log(str(self.join_request_senders))
                             self.join_request_senders[pck['gui']] = pck
-                            self.kill_timer('TIMER_JOIN_REQUEST_RECV') # reset timer
-                            self.set_timer('TIMER_JOIN_REQUEST_RECV', 5)
-                        else:
-                            self.log("➖ %s: Node %s already in join request senders. Ignoring." % (str(self.addr), str(pck['gui'])))
-                            pass
                     elif self.role == Roles.ROUTER:
-                        self.send_join_response(pck['gui'], 'REJECT')
+                        # routers are the last resort 
+                        pass
+
                 
                 case 'JOIN_RESPONSE':
                     if pck['dest_gui'] == self.id:
@@ -736,6 +744,8 @@ class SensorNode(wsn.Node):
                                     self.node_vacancies[chosen_node_addr] = True
                                 else:
                                     self.send_join_response(gui, 'REJECT')
+                    elif self.role == Roles.ROUTER:
+                        pass
                 
                 case 'NETWORK_UPDATE':
                     match self.role:
@@ -885,7 +895,7 @@ class SensorNode(wsn.Node):
         parent_dead = False
         will_be_removed = []
         #self.log([(gui, neighbor['hops_away'], neighbor['arrival_time']) for gui, neighbor in self.neighbors.items()])
-        #self.log(self.candidate_parents)
+        #self.log(self.descendants)
         for gui, pck in self.neighbors.items():
             if self.now - pck['arrival_time'] > 3 * config.HEARTBEAT_INTERVAL:
                 will_be_removed.append(gui)
@@ -894,6 +904,9 @@ class SensorNode(wsn.Node):
                 if gui in self.descendants.keys():
                     del self.descendants[gui]
                     childs_updated = True
+                    if self.role == Roles.ROUTER:
+                        # it lost its only descendant and is basically a leaf node now
+                        self.set_role(Roles.REGISTERED)
                 if gui in self.candidate_parents.keys():
                     del self.candidate_parents[gui]
         #self.log("To be removed: %s" % will_be_removed)
@@ -947,7 +960,7 @@ class SensorNode(wsn.Node):
         """
         if self.role in [Roles.CLUSTER_HEAD, Roles.ROUTER]:
             self.send_orphan_notice()
-        self.become_unregistered(keep_ch_addr=True)
+        self.become_unregistered()
 
     def repair_find_another_parent(self):
         """If it has potential parent in its table, tries to connect any of them. Otherwise becomes unregistered.
@@ -1090,7 +1103,7 @@ class SensorNode(wsn.Node):
             if mesh_used == True:
                 self.poisoned_addr = pck['next_hop']
             pck['ttl'] -= 1
-            if config.SIM_ROUTING_LOGS == True:# and pck['type'] != 'CLUSTER_ALIVE':
+            if config.SIM_ROUTING_LOGS == True and pck['type'] != 'CLUSTER_ALIVE':
                 self.log("🚛 %s: %s from %s to %s, " % (self.addr, pck['type'], pck['source'], pck['dest']) + log_string + " TTL: %s" % pck['ttl'])
             if pck['ttl'] <= 0:
                 self.log("⛔ %s: %s has expired. Dropping!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" % (str(self.addr), pck['type']))
@@ -1143,7 +1156,7 @@ class SensorNode(wsn.Node):
         if self.role != Roles.UNDISCOVERED:
             self.kill_all_timers()
         self.set_role(Roles.UNREGISTERED)
-        self.log("Became unregistered. %s" % ("Keeping CH address." if keep_ch_addr else "Clearing CH address."))
+        #self.log("Became unregistered. %s" % ("Keeping CH address." if keep_ch_addr else "Clearing CH address."))
         self.clear_data(keep_ch_addr)
         self.wake_up()
         self.send_probe()
