@@ -816,16 +816,28 @@ class SensorNode(wsn.Node):
     # Actions #
     ###########
     def select_and_join(self):
-        min_hops_to_root = 99999
         min_hop_gui = 99999
+        router_min_hops_to_root = 99999
+        router_min_hop_gui = 99999
+        nonrouter_min_hops_to_root = 99999
+        nonrouter_min_hop_gui = 99999
         #self.check_neighbors()
         #self.log([(gui, candidate['hops_to_root']) for gui, candidate in self.candidate_parents.items()])
         #self.log([(gui, candidate['hops_to_root']) for gui, candidate in self.neighbors.items()])
         for gui in self.candidate_parents.keys():
+            # simple two-tier system: prefer any type of registered node over router
+            if self.neighbors[gui]['role'] not in [Roles.UNREGISTERED]:
+                if self.neighbors[gui]['hops_to_root'] < router_min_hops_to_root or (self.neighbors[gui]['hops_to_root'] == router_min_hops_to_root and gui < router_min_hop_gui):
+                    router_min_hops_to_root = self.neighbors[gui]['hops_to_root']
+                    router_min_hop_gui = gui
             if self.neighbors[gui]['role'] not in [Roles.UNREGISTERED, Roles.ROUTER]:
-                if self.neighbors[gui]['hops_to_root'] < min_hops_to_root or (self.neighbors[gui]['hops_to_root'] == min_hops_to_root and gui < min_hop_gui):
-                    min_hops_to_root = self.neighbors[gui]['hops_to_root']
-                    min_hop_gui = gui
+                if self.neighbors[gui]['hops_to_root'] < nonrouter_min_hops_to_root or (self.neighbors[gui]['hops_to_root'] == nonrouter_min_hops_to_root and gui < nonrouter_min_hop_gui):
+                    nonrouter_min_hops_to_root = self.neighbors[gui]['hops_to_root']
+                    nonrouter_min_hop_gui = gui
+            if nonrouter_min_hop_gui != 99999: # this will always be preferred
+                min_hop_gui = nonrouter_min_hop_gui
+            elif router_min_hop_gui != 99999:
+                min_hop_gui = router_min_hop_gui
         if min_hop_gui != 99999:
             #self.log(min_hop_gui)
             selected_addr = self.neighbors[min_hop_gui]['source']
