@@ -136,6 +136,7 @@ class SensorNode(wsn.Node):
         self.join_time = None
         self.energy_mAh = 21600
         self.poisoned_addr = None
+        self.router_promotable = False
         
         self.neighbors = {}
         self.candidate_parents = {}
@@ -547,6 +548,9 @@ class SensorNode(wsn.Node):
                 self.send_network_request(self.root_addr)
                 self.set_timer("TIMER_NETWORK_REQUEST", 120)
 
+            case 'TIMER_ENABLE_ROUTER_PROMOTION':
+                self.router_promotable = True
+
             case 'TIMER_RANDOM_DATA':
                 if RNG.random() < 0.1:
                     self.send_random_data(RNG.choice(ACTIVE_ADDRS))
@@ -683,18 +687,19 @@ class SensorNode(wsn.Node):
                         # because they could be the crucial link to other nodes. see seed 7777777
 
                         # collect join request senders to avoid multiple requests from same node
-                        self.log("📦 %s: Received JOIN_REQUEST from Node %s" % (str(self.addr), str(pck['gui'])))
-                        if pck['gui'] != self.parent_gui:
-                            if pck['gui'] not in self.join_request_senders:
-                                pck['attempts'] = 0
-                                self.kill_timer('TIMER_JOIN_REQUEST_RECV') # reset timer
-                                self.set_timer('TIMER_JOIN_REQUEST_RECV', 5)
-                                self.log("➕ %s: Adding Node %s to join request senders. Waiting for more..." % (str(self.addr), str(pck['gui'])))
-                            else:
-                                pck['attempts'] = self.join_request_senders[pck['gui']]['attempts'] + 1
-                                self.log("➖ %s: Node %s already in join request senders. Ignoring. Attempts: %s" % (str(self.addr), str(pck['gui']), pck['attempts']))
-                            #self.log(str(self.join_request_senders))
-                            self.join_request_senders[pck['gui']] = pck
+                        if self.router_promotable == True:
+                            self.log("📦 %s: Received JOIN_REQUEST from Node %s" % (str(self.addr), str(pck['gui'])))
+                            if pck['gui'] != self.parent_gui:
+                                if pck['gui'] not in self.join_request_senders:
+                                    pck['attempts'] = 0
+                                    self.kill_timer('TIMER_JOIN_REQUEST_RECV') # reset timer
+                                    self.set_timer('TIMER_JOIN_REQUEST_RECV', 5)
+                                    self.log("➕ %s: Adding Node %s to join request senders. Waiting for more..." % (str(self.addr), str(pck['gui'])))
+                                else:
+                                    pck['attempts'] = self.join_request_senders[pck['gui']]['attempts'] + 1
+                                    self.log("➖ %s: Node %s already in join request senders. Ignoring. Attempts: %s" % (str(self.addr), str(pck['gui']), pck['attempts']))
+                                #self.log(str(self.join_request_senders))
+                                self.join_request_senders[pck['gui']] = pck
 
                 
                 case 'JOIN_RESPONSE':
@@ -749,6 +754,7 @@ class SensorNode(wsn.Node):
                             self.select_and_nominate(pck['addr'])
                             self.set_role(Roles.ROUTER)
                             self.join_request_senders = {}
+                            self.set_timer('TIMER_ENABLE_ROUTER_PROMOTION', config.SIM_ROUTER_PROMOTION_COOLDOWN)
                         else:
                             self.set_role(Roles.CLUSTER_HEAD)
                             self.kill_timer('TIMER_NETWORK_REQUEST')

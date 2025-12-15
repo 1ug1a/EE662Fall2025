@@ -32,6 +32,7 @@ SIM_TTL = 32  # time to live for routed packets
 ## modes
 SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes. used to track routing
 SIM_INCLUDE_ROUTERS = True  # (unilaterally) nominate nodes requesting join to CH and turn into Router in between 
+SIM_ROUTER_PROMOTION_COOLDOWN = 100  # time units to prevent router promotion after becoming router
 SIM_ENERGY_LOSS = False  # enable loss of node energy when sending a packet
 SIM_PACKET_LOSS_RATE = 0.00  # self-explanatory
 SIM_KILL_NODES = True  # kill a random selection of nodes
