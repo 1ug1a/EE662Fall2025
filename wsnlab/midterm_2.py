@@ -571,11 +571,12 @@ class SensorNode(wsn.Node):
                     JOIN_TIMES.append(self.join_time)
                 if self.id == ROOT_ID:
                     #pprint(ADDR_NODE_KEY)
+                    SORTED_ADDR_NODE_KEY = dict(sorted(ADDR_NODE_KEY.items(), key=lambda item: item[1]))
                     with open('ADDR_NODE_KEY.txt', 'w') as f:
-                        for addr, gui in ADDR_NODE_KEY.items():
+                        for addr, gui in SORTED_ADDR_NODE_KEY.items():
                             f.write(f"{addr}:\t{gui}" + '\n')
                     with open('ACTIVE_ADDRS.txt', 'w') as f:
-                        for addr in ADDR_NODE_KEY:
+                        for addr in SORTED_ADDR_NODE_KEY.keys():
                             f.write(f"{addr}" + '\n')
                     pass
                 if self.id == config.SIM_NODE_COUNT - 1:
@@ -669,8 +670,31 @@ class SensorNode(wsn.Node):
                             #self.log(str(self.join_request_senders))
                             self.join_request_senders[pck['gui']] = pck
                     elif self.role == Roles.ROUTER:
-                        # routers are the last resort 
-                        pass
+                        # now with the two-tier select_and_join routers will only get JOIN_REQUESTs when absolutely necessary
+                        # what it needs to do: send NETWORK_REQUEST to root to eventually promote self to CH and assign addresses to downstream nodes
+                        
+                        # i started with the same functionality but that means
+                        # when a network is initially forming routers can easily receive JOIN_REQUESTs
+                        # and thus the routers become CHs right away which is not great for reducing cluster overlap
+                        # possible solutions:
+                        # 1. set a timer where it doesn't respond to JOIN_REQUESTs for a while after becoming a router
+                        # 2. wait a certain number of attempts
+                        # note that not promoting when there is only a single node trying to join won't work
+                        # because they could be the crucial link to other nodes. see seed 7777777
+
+                        # collect join request senders to avoid multiple requests from same node
+                        self.log("📦 %s: Received JOIN_REQUEST from Node %s" % (str(self.addr), str(pck['gui'])))
+                        if pck['gui'] != self.parent_gui:
+                            if pck['gui'] not in self.join_request_senders:
+                                pck['attempts'] = 0
+                                self.kill_timer('TIMER_JOIN_REQUEST_RECV') # reset timer
+                                self.set_timer('TIMER_JOIN_REQUEST_RECV', 5)
+                                self.log("➕ %s: Adding Node %s to join request senders. Waiting for more..." % (str(self.addr), str(pck['gui'])))
+                            else:
+                                pck['attempts'] = self.join_request_senders[pck['gui']]['attempts'] + 1
+                                self.log("➖ %s: Node %s already in join request senders. Ignoring. Attempts: %s" % (str(self.addr), str(pck['gui']), pck['attempts']))
+                            #self.log(str(self.join_request_senders))
+                            self.join_request_senders[pck['gui']] = pck
 
                 
                 case 'JOIN_RESPONSE':
@@ -745,6 +769,24 @@ class SensorNode(wsn.Node):
                                 else:
                                     self.send_join_response(gui, 'REJECT')
                     elif self.role == Roles.ROUTER:
+                        self.set_role(Roles.CLUSTER_HEAD)
+                        self.kill_timer('TIMER_NETWORK_REQUEST')
+                        self.log("🚀 %s: Received NETWORK_RESPONSE. Promoting to CLUSTER_HEAD with address %s" % (str(self.addr), str(pck['addr'])))
+                        self.ch_addr = pck['addr']
+                        ADDR_NODE_KEY[(self.ch_addr.net_addr, self.ch_addr.node_addr)] = self.id
+                        self.log("🔄 %s: Updating network..." % str(self.ch_addr))
+                        self.send_network_update()
+                        self.send_heartbeat()
+                        self.send_cluster_alive()
+                        for gui in RNG.sample(sorted(self.join_request_senders.keys()), len(self.join_request_senders.keys())): # randomly sample in case of limited slots
+                            if not all(self.node_vacancies):
+                                # get smallest available address by going through node_availability until false
+                                #self.log("📝 %s: Node availability: %s" % (str(self.addr), dict(enumerate(self.node_vacancies))))
+                                chosen_node_addr = min([idx for idx, val in enumerate(self.node_vacancies) if val == False])
+                                self.send_join_response(gui, 'ACCEPT', wsn.Addr(self.ch_addr.net_addr, chosen_node_addr))
+                                self.node_vacancies[chosen_node_addr] = True
+                            else:
+                                self.send_join_response(gui, 'REJECT')
                         pass
                 
                 case 'NETWORK_UPDATE':
