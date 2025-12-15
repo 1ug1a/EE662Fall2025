@@ -15,11 +15,11 @@ SIM_VISUALIZATION = True  # visualization active
 SIM_TITLE = 'Cluster-Tree Mesh Network'  # title of visualization window
 SIM_TERRAIN_SIZE = (850, 800)  #terrain size
 SIM_SCALE = 1  # scale factor for visualization
-SIM_RANDOM_SEED = 7777777  # random seed across the entire simulation
+SIM_RANDOM_SEED = None  # random seed across the entire simulation
 SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
 SIM_DURATION = 3000  # simulation duration in seconds
-SIM_TIME_SCALE = 0.1  #  The real time duration of 1 second simualtion time
+SIM_TIME_SCALE = 0.01  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
 ## other network/sim properties

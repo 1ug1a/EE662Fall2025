@@ -83,9 +83,10 @@ Implementation Status (not up-to-date):
 '''
 
 '''
-Questions I'm having about recovery with routers involved:
-    - How exactly should routers behave during recovery?
-        - Some routers end up 'loose'. Should those just become plain registered nodes again?
+Current observations:
+    - Some loops are caused by out-of-date neighbor tables.
+        - It makes network requests/responses take a full retry to get through sometimes.
+    - There are some issues with stray routers and CHs with no members.
 '''
 
 ###########################################################
@@ -349,7 +350,7 @@ class SensorNode(wsn.Node):
         })
         self.lose_energy_tx()
 
-    def send_network_request(self, dest):
+    def send_network_request(self, dest, use_mesh = True):
         """Sends a network request message to given destination address. (Multi-hop)
 
         Args:
@@ -364,7 +365,7 @@ class SensorNode(wsn.Node):
             'source': self.addr,
             'ttl': config.SIM_TTL,
             'created': self.now
-        })
+        }, use_mesh = use_mesh) # when resent, use tree routing only to avoid loops
 
     def send_network_response(self, dest, addr):
         """Sending network reply message to dest address to be cluster head with a new adress
@@ -407,7 +408,7 @@ class SensorNode(wsn.Node):
             addr = self.neighbors[self.parent_gui]['ch_addr']
         elif self.neighbors[self.parent_gui]['addr'] is not None:
             addr = self.neighbors[self.parent_gui]['addr']
-        self.log("🔄 %s: Sending NETWORK_UPDATE to parent %s" % (str(self.addr), str(addr)))
+        #self.log("🔄 %s: Sending NETWORK_UPDATE to parent %s" % (str(self.addr), str(addr)))
         self.send({
             'dest': addr,
             'type': 'NETWORK_UPDATE',
@@ -427,7 +428,7 @@ class SensorNode(wsn.Node):
             'gui': self.id,
             'ttl': config.SIM_TTL,
             'created': self.now
-        }, use_mesh = False)
+        }, use_mesh = False) # tree routing only; mesh routing creates risk and is not great when it needs to be reliable
 
     def send_orphan_notice(self):
         """Sends i am orphan message to inform its neighbors.
@@ -545,7 +546,7 @@ class SensorNode(wsn.Node):
                     self.kill_timer("TIMER_NETWORK_REQUEST")
                     return
                 self.log("📡 %s: Resending NETWORK_REQUEST..." % str(self.addr))
-                self.send_network_request(self.root_addr)
+                self.send_network_request(self.root_addr, use_mesh=False) # tree routing only to avoid loops
                 self.set_timer("TIMER_NETWORK_REQUEST", 120)
 
             case 'TIMER_ENABLE_ROUTER_PROMOTION':
@@ -575,7 +576,7 @@ class SensorNode(wsn.Node):
                     JOIN_TIMES.append(self.join_time)
                 if self.id == ROOT_ID:
                     #pprint(ADDR_NODE_KEY)
-                    SORTED_ADDR_NODE_KEY = dict(sorted(ADDR_NODE_KEY.items(), key=lambda item: item[1]))
+                    SORTED_ADDR_NODE_KEY = dict(sorted(ADDR_NODE_KEY.items()))
                     with open('ADDR_NODE_KEY.txt', 'w') as f:
                         for addr, gui in SORTED_ADDR_NODE_KEY.items():
                             f.write(f"{addr}:\t{gui}" + '\n')
@@ -1090,12 +1091,21 @@ class SensorNode(wsn.Node):
             temp_neighbors_inverted = {(self.neighbors[key]['addr'].net_addr, self.neighbors[key]['addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['addr'] is not None and key != self.parent_gui}
             temp_neighbors_inverted.update({(self.neighbors[key]['ch_addr'].net_addr, self.neighbors[key]['ch_addr'].node_addr): key for key in self.neighbors.keys() if self.neighbors[key]['ch_addr'] is not None})
 
+            # print neighbor table for debugging, include roles
+            '''debug_log_string = "Neighbor Table:\n"
+            for neighbor_tuple, gui in temp_neighbors_inverted.items():
+                neighbor_info = self.neighbors[gui]
+                debug_log_string += " - GUI: %s | Addr: %s | CH_Addr: %s | Role: %s | Hops Away: %s\n" % (str(gui), str(neighbor_info['addr']), str(neighbor_info['ch_addr']), str(neighbor_info['role']), str(neighbor_info['hops_away']))
+            self.log(debug_log_string.strip())'''
+
             # when the packet is finally routed it "poisons" the last routed location. this probably isn't optimal.
             if self.poisoned_addr is not None and (self.poisoned_addr.net_addr, self.poisoned_addr.node_addr) in temp_neighbors_inverted:
                 # restrict poisoning to multi-hop neighbors, not direct ones
-                if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
-                    self.log("Poisoned address: %s" % self.poisoned_addr)
-                    temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
+                # and avoid poisoning if it is literally the destination
+                if pck['dest'] != self.poisoned_addr:
+                    if self.neighbors[temp_neighbors_inverted[(self.poisoned_addr.net_addr, self.poisoned_addr.node_addr)]]['hops_away'] != 1:
+                        self.log("Poisoned address: %s" % self.poisoned_addr)
+                        temp_neighbors_inverted.pop((self.poisoned_addr.net_addr, self.poisoned_addr.node_addr))
             
             # remove non-leaf nodes from this dict for routers
             if self.role == Roles.ROUTER:
@@ -1109,7 +1119,7 @@ class SensorNode(wsn.Node):
                     if self.neighbors[temp_neighbors_inverted[neighbor_tuple]]['role'] in [Roles.ROUTER]:
                         temp_neighbors_inverted.pop(neighbor_tuple)
             #self.log("🧭 %s: Inverted neighbor table: %s" % (str(self.addr), dict(temp_neighbors_inverted)))
-            
+
             # finally, the rules
             # check for destination cluster in neighbor addresses
             dest_net_addr = pck['dest'].net_addr
