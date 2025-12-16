@@ -26,12 +26,13 @@ NODE_IDS_WITHOUT_ROOT = list(range(config.SIM_NODE_COUNT))
 NODE_IDS_WITHOUT_ROOT.remove(ROOT_ID)
 NODES_TO_KILL = RNG.sample(NODE_IDS_WITHOUT_ROOT, config.SIM_NODES_TO_KILL)
 
-# diagnostics
+# debug trackers/metrics
 NODE_POS = {}
 ACTIVE_ADDRS = []
 ADDR_NODE_KEY = {}
 ROLE_COUNTS = Counter()
 JOIN_TIMES = []
+PACKET_METRICS = {'sent': 0, 'delivered': 0}
 
 '''
 Midterm 2 - Elpy Perez
@@ -114,7 +115,7 @@ class SensorNode(wsn.Node):
 
         """
         # visualization/scene setup
-        self.scene.nodecolor(self.id, 0.7, 0.7, 0.7) # light gray
+        self.set_role(Roles.OFF)
         self.is_root_eligible = True if self.id == ROOT_ID else False
 
         # addresses/ids
@@ -150,7 +151,7 @@ class SensorNode(wsn.Node):
 
         # logging
         self.set_timer('TIMER_DEBUG_STATUS', 99)
-        self.set_timer('TIMER_DEBUG_END', config.SIM_DURATION-0.01)
+        self.set_timer('TIMER_DEBUG_END', config.SIM_DURATION-0.1)
 
         self.sleep()
 
@@ -588,6 +589,8 @@ class SensorNode(wsn.Node):
                     AVG_JOIN_TIME = sum(JOIN_TIMES) / (config.SIM_NODE_COUNT - 1)
                     print("###########################################")
                     print("Average join time: %s s" % AVG_JOIN_TIME)
+                    print("Packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
+                    print("Delivery rate: %.2f%%" % (PACKET_METRICS['sent'] / PACKET_METRICS['sent'] * 100 if PACKET_METRICS['sent'] > 0 else 0))
 
     ############
     # Receives #
@@ -612,6 +615,7 @@ class SensorNode(wsn.Node):
 
         # only do something if the packet is addressed to me (unicast or broadcast)
         if pck['dest'] == wsn.BROADCAST_ADDR or (self.ch_addr is not None and pck['dest'] == self.ch_addr) or (self.addr is not None and pck['dest'] == self.addr):
+            PACKET_METRICS['delivered'] += 1
             match pck['type']:
                 case 'PROBE':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD, Roles.REGISTERED, Roles.ROUTER]:
@@ -839,9 +843,9 @@ class SensorNode(wsn.Node):
                 
                 case 'ORPHAN_NOTICE':
                     if self.role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.ROOT]:
-                        self.log("📣 %s: Received ORPHAN_NOTICE from %s. Checking if sent by parent %s" % (str(self.addr), str(pck['source']), str(self.parent_gui)))
+                        #self.log("📣 %s: Received ORPHAN_NOTICE from %s. Checking if sent by parent %s" % (str(self.addr), str(pck['source']), str(self.parent_gui)))
                         if self.parent_gui in self.neighbors:
-                            self.log(self.neighbors[self.parent_gui])
+                            #self.log(self.neighbors[self.parent_gui])
                             if 'ch_addr' in self.neighbors[self.parent_gui]:
                                 if self.neighbors[self.parent_gui]['ch_addr'] is not None:
                                     if pck['source'] == self.neighbors[self.parent_gui]['ch_addr']:
@@ -1072,30 +1076,23 @@ class SensorNode(wsn.Node):
             #self.log("Routing: parent.")
             if self.parent_gui in self.neighbors:
                 candidate_next_hop = self.neighbors[self.parent_gui]['addr']
-                chosen_next_hop = candidate_next_hop
-                log_string = "next hop: parent %s" % (str(self.neighbors[self.parent_gui]['addr']))
+                if chosen_next_hop is None or chosen_next_hop != candidate_next_hop:
+                    chosen_next_hop = candidate_next_hop
+                    log_string = "next hop: parent %s" % (str(self.neighbors[self.parent_gui]['addr']))
         if self.ch_addr is not None:
             if pck['dest'].net_addr == self.ch_addr.net_addr:
                 #self.log("Routing: cluster member.")
                 candidate_next_hop = pck['dest']
-                if self.role == Roles.ROOT:
+                if chosen_next_hop is None or chosen_next_hop != candidate_next_hop:
                     chosen_next_hop = candidate_next_hop
                     log_string = "next hop: cluster member %s" % str(chosen_next_hop)
-                else:
-                    if chosen_next_hop != candidate_next_hop:
-                        chosen_next_hop = candidate_next_hop
-                        log_string = "next hop: cluster member %s" % str(chosen_next_hop)
         for child_gui, child_networks in self.descendants.items():
             if pck['dest'].net_addr in child_networks:
                 #self.log("Routing: descendant.")
                 candidate_next_hop = self.neighbors[child_gui]['addr']
-                if self.role == Roles.ROOT:
+                if chosen_next_hop is None or chosen_next_hop != candidate_next_hop:
                     chosen_next_hop = candidate_next_hop
                     log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
-                else:
-                    if chosen_next_hop != candidate_next_hop:
-                        chosen_next_hop = candidate_next_hop
-                        log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
         
         ############################## Mesh Routing
         # add mesh routing using neighbor tables. overrides tree routing
@@ -1181,7 +1178,7 @@ class SensorNode(wsn.Node):
                     #self.log("Routing: neighbor.")
                     candidate_next_hop = one_hop_neighbor_addr
                     mesh_used = True
-                    if chosen_next_hop != candidate_next_hop:
+                    if chosen_next_hop is None or chosen_next_hop != candidate_next_hop:
                         chosen_next_hop = candidate_next_hop
                         log_string = "next hop: %s towards neighbor %s" % (str(one_hop_neighbor_addr), str(neighbor_addr))
                     
@@ -1250,6 +1247,7 @@ class SensorNode(wsn.Node):
         self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
 
     def lose_energy_tx(self):
+        PACKET_METRICS['sent'] += 1
         if config.SIM_ENERGY_LOSS:
             if self.role != Roles.ROOT:
                 self.energy_mAh -= 17

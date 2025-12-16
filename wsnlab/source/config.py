@@ -18,7 +18,7 @@ SIM_SCALE = 1  # scale factor for visualization
 SIM_RANDOM_SEED = None  # random seed across the entire simulation
 SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
-SIM_DURATION = 2000  # simulation duration in seconds
+SIM_DURATION = 2500  # simulation duration in seconds
 SIM_TIME_SCALE = 0.01  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
@@ -32,7 +32,7 @@ SIM_TTL = 32  # time to live for routed packets
 ## modes
 SIM_SEND_RANDOM_DATA = True  # nodes send random data packets to other nodes. used to track routing
 SIM_INCLUDE_ROUTERS = True  # (unilaterally) nominate nodes requesting join to CH and turn into Router in between 
-SIM_ROUTER_PROMOTION_COOLDOWN = 500  # time units to prevent router promotion after becoming router
+SIM_ROUTER_PROMOTION_COOLDOWN = 360  # time units to prevent router promotion after becoming router
 SIM_ENERGY_LOSS = False  # enable loss of node energy when sending a packet
 SIM_PACKET_LOSS_RATE = 0.00  # self-explanatory
 SIM_KILL_NODES = True  # kill a random selection of nodes
