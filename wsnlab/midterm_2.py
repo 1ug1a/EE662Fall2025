@@ -151,7 +151,7 @@ class SensorNode(wsn.Node):
 
         # logging
         self.set_timer('TIMER_DEBUG_STATUS', 99)
-        self.set_timer('TIMER_DEBUG_END', config.SIM_DURATION-0.1)
+        self.set_timer('TIMER_DEBUG_END', config.SIM_DURATION-1)
 
         self.sleep()
 
@@ -258,6 +258,7 @@ class SensorNode(wsn.Node):
             'ttl': config.SIM_TTL,
             'created': self.now
         })
+        PACKET_METRICS['sent'] += 1
         self.lose_energy_tx()
 
     def send_join_response(self, dest, resp, addr=wsn.Addr(0,0)):
@@ -306,6 +307,7 @@ class SensorNode(wsn.Node):
             'gui': self.id,
             'created': self.now
         })
+        PACKET_METRICS['sent'] += 1
         self.lose_energy_tx()
 
     def share_neighbors(self):
@@ -367,6 +369,7 @@ class SensorNode(wsn.Node):
             'ttl': config.SIM_TTL,
             'created': self.now
         }, use_mesh = use_mesh) # when resent, use tree routing only to avoid loops
+        PACKET_METRICS['sent'] += 1
 
     def send_network_response(self, dest, addr):
         """Sending network reply message to dest address to be cluster head with a new adress
@@ -388,6 +391,7 @@ class SensorNode(wsn.Node):
             'ttl': config.SIM_TTL,
             'created': self.now
         })
+        PACKET_METRICS['sent'] += 1
 
     def send_network_update(self):
         """Sending network update message to parent (1-hop)
@@ -419,6 +423,7 @@ class SensorNode(wsn.Node):
             'created': self.now
         })
         self.lose_energy_tx()
+        PACKET_METRICS['sent'] += 1
 
     def send_cluster_alive(self):
         #self.log("👋 %s: Sending CLUSTER_ALIVE to root." % (str(self.ch_addr)))
@@ -430,6 +435,7 @@ class SensorNode(wsn.Node):
             'ttl': config.SIM_TTL,
             'created': self.now
         }, use_mesh = False) # tree routing only; mesh routing creates risk and is not great when it needs to be reliable
+        PACKET_METRICS['sent'] += 1
 
     def send_orphan_notice(self):
         """Sends i am orphan message to inform its neighbors.
@@ -466,6 +472,7 @@ class SensorNode(wsn.Node):
             'ttl': config.SIM_TTL,
             'created': self.now
         })
+        PACKET_METRICS['sent'] += 1
     
     ##########
     # Timers #
@@ -584,13 +591,14 @@ class SensorNode(wsn.Node):
                     with open('ACTIVE_ADDRS.txt', 'w') as f:
                         for addr in SORTED_ADDR_NODE_KEY.keys():
                             f.write(f"{addr}" + '\n')
-                    pass
-                if self.id == config.SIM_NODE_COUNT - 1:
+
                     AVG_JOIN_TIME = sum(JOIN_TIMES) / (config.SIM_NODE_COUNT - 1)
                     print("###########################################")
                     print("Average join time: %s s" % AVG_JOIN_TIME)
-                    print("Packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
-                    print("Delivery rate: %.2f%%" % (PACKET_METRICS['sent'] / PACKET_METRICS['sent'] * 100 if PACKET_METRICS['sent'] > 0 else 0))
+                    print("Unicast packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
+                    print("Role counts:")
+                    for role, count in ROLE_COUNTS.items():
+                        print("- %s: %s" % (role.name, count))
 
     ############
     # Receives #
@@ -615,7 +623,6 @@ class SensorNode(wsn.Node):
 
         # only do something if the packet is addressed to me (unicast or broadcast)
         if pck['dest'] == wsn.BROADCAST_ADDR or (self.ch_addr is not None and pck['dest'] == self.ch_addr) or (self.addr is not None and pck['dest'] == self.addr):
-            PACKET_METRICS['delivered'] += 1
             match pck['type']:
                 case 'PROBE':
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD, Roles.REGISTERED, Roles.ROUTER]:
@@ -649,6 +656,7 @@ class SensorNode(wsn.Node):
                             self.neighbors[gui] = pck
                 
                 case 'JOIN_REQUEST':
+                    PACKET_METRICS['delivered'] += 1
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
                         if not all(self.node_vacancies):
                             # get smallest available address by going through node_availability until false
@@ -734,6 +742,7 @@ class SensorNode(wsn.Node):
                                 self.candidate_parents.pop(pck['gui'])
                 
                 case 'JOIN_ACK':
+                    PACKET_METRICS['delivered'] += 1
                     if self.role in [Roles.ROOT, Roles.CLUSTER_HEAD]:
                         self.members[pck['gui']] = pck
                         #self.log(self.join_request_senders)
@@ -744,6 +753,7 @@ class SensorNode(wsn.Node):
                         self.log('🤝 [Network]: Node %s joined as member with address %s' % (str(pck['gui']), str(pck['source'])))
                 
                 case 'NETWORK_REQUEST':
+                    PACKET_METRICS['delivered'] += 1
                     if self.role == Roles.ROOT:
                         pck['arrival_time'] = self.now
                         self.log("📨 %s: Received NETWORK_REQUEST from %s" % (str(self.addr), str(pck['source'])))
@@ -752,6 +762,7 @@ class SensorNode(wsn.Node):
                         self.clusters[chosen_net_addr] = pck
                 
                 case 'NETWORK_RESPONSE':
+                    PACKET_METRICS['delivered'] += 1
                     if self.role == Roles.REGISTERED:
                         # either promote self to CH, or select and nominate a downstream node to become CH
                         if config.SIM_INCLUDE_ROUTERS:
@@ -801,6 +812,7 @@ class SensorNode(wsn.Node):
                         pass
                 
                 case 'NETWORK_UPDATE':
+                    PACKET_METRICS['delivered'] += 1
                     match self.role:
                         case Roles.ROOT:
                             self.descendants[pck['gui']] = pck['descendants']
@@ -815,6 +827,7 @@ class SensorNode(wsn.Node):
                     #self.log("🔄 %s: Updated descendants: %s" % (str(self.addr), self.descendants))
                 
                 case 'CLUSTER_ALIVE':
+                    PACKET_METRICS['delivered'] += 1
                     if self.role == Roles.ROOT:
                         pck['arrival_time'] = self.now
                         self.clusters[pck['source'].net_addr] = pck
@@ -857,6 +870,7 @@ class SensorNode(wsn.Node):
                                         self.repair()
 
                 case 'DATA':
+                    PACKET_METRICS['delivered'] += 1
                     self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
         else:
             if self.addr is not None:
@@ -1247,7 +1261,6 @@ class SensorNode(wsn.Node):
         self.set_timer('TIMER_JOIN_REQUEST_SEND', 20)
 
     def lose_energy_tx(self):
-        PACKET_METRICS['sent'] += 1
         if config.SIM_ENERGY_LOSS:
             if self.role != Roles.ROOT:
                 self.energy_mAh -= 17
