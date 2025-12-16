@@ -725,7 +725,7 @@ class SensorNode(wsn.Node):
                             else:
                                 self.set_role(Roles.REGISTERED)
                         elif pck['response'] == 'REJECT':
-                            self.log("🚫 [Node %s]: Node %s is full. Removing from candidate parents. Remaining: %s" % (str(self.id), str(pck['gui']), list(self.candidate_parents)))
+                            self.log("🚫 [Node %s]: Node %s rejected request. Removing from candidate parents. Remaining: %s" % (str(self.id), str(pck['gui']), list(self.candidate_parents)))
                             if pck['gui'] in self.candidate_parents:
                                 self.candidate_parents.pop(pck['gui'])
                 
@@ -1065,23 +1065,37 @@ class SensorNode(wsn.Node):
 
         ############################## Tree Routing
         # this entire routing mechanism is ordered in reverse priority
-        # higher priority decisions for pck['next_hop'] override the previous ones
-        pck['next_hop'] = None
+        # higher priority decisions for candidate_next_hop override the previous ones
+        candidate_next_hop = None
+        chosen_next_hop = None
         if self.role != Roles.ROOT and self.parent_gui is not None:
             #self.log("Routing: parent.")
             if self.parent_gui in self.neighbors:
+                candidate_next_hop = self.neighbors[self.parent_gui]['addr']
+                chosen_next_hop = candidate_next_hop
                 log_string = "next hop: parent %s" % (str(self.neighbors[self.parent_gui]['addr']))
-                pck['next_hop'] = self.neighbors[self.parent_gui]['addr']
         if self.ch_addr is not None:
             if pck['dest'].net_addr == self.ch_addr.net_addr:
                 #self.log("Routing: cluster member.")
-                log_string = "next hop: cluster member %s" % str(self.ch_addr)
-                pck['next_hop'] = pck['dest']
+                candidate_next_hop = pck['dest']
+                if self.role == Roles.ROOT:
+                    chosen_next_hop = candidate_next_hop
+                    log_string = "next hop: cluster member %s" % str(chosen_next_hop)
+                else:
+                    if chosen_next_hop != candidate_next_hop:
+                        chosen_next_hop = candidate_next_hop
+                        log_string = "next hop: cluster member %s" % str(chosen_next_hop)
         for child_gui, child_networks in self.descendants.items():
             if pck['dest'].net_addr in child_networks:
                 #self.log("Routing: descendant.")
-                log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
-                pck['next_hop'] = self.neighbors[child_gui]['addr']
+                candidate_next_hop = self.neighbors[child_gui]['addr']
+                if self.role == Roles.ROOT:
+                    chosen_next_hop = candidate_next_hop
+                    log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
+                else:
+                    if chosen_next_hop != candidate_next_hop:
+                        chosen_next_hop = candidate_next_hop
+                        log_string = "next hop: descendant %s" % (str(self.neighbors[child_gui]['ch_addr'] or self.neighbors[child_gui]['addr']))
         
         ############################## Mesh Routing
         # add mesh routing using neighbor tables. overrides tree routing
@@ -1165,13 +1179,16 @@ class SensorNode(wsn.Node):
                 one_hop_neighbor_addr = self.neighbors[neighbor_id]['next_hop']
                 if one_hop_neighbor_addr is not None:
                     #self.log("Routing: neighbor.")
-                    pck['next_hop'] = one_hop_neighbor_addr
+                    candidate_next_hop = one_hop_neighbor_addr
                     mesh_used = True
-                    log_string = "next hop: %s towards neighbor %s" % (str(one_hop_neighbor_addr), str(neighbor_addr))
+                    if chosen_next_hop != candidate_next_hop:
+                        chosen_next_hop = candidate_next_hop
+                        log_string = "next hop: %s towards neighbor %s" % (str(one_hop_neighbor_addr), str(neighbor_addr))
                     
-        if pck['next_hop'] is not None:
+        if chosen_next_hop is not None:
+            pck['next_hop'] = chosen_next_hop
             if mesh_used == True:
-                self.poisoned_addr = pck['next_hop']
+                self.poisoned_addr = chosen_next_hop
             pck['ttl'] -= 1
             if config.SIM_ROUTING_LOGS == True and pck['type'] != 'CLUSTER_ALIVE':
                 self.log("🚛 %s: %s from %s to %s, " % (self.addr, pck['type'], pck['source'], pck['dest']) + log_string + " TTL: %s" % pck['ttl'])
