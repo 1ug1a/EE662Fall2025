@@ -18,24 +18,24 @@ SIM_SCALE = 1  # scale factor for visualization
 SIM_RANDOM_SEED = None  # random seed across the entire simulation
 SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
-SIM_DURATION = 1000  # simulation duration in seconds
+SIM_DURATION = 2000  # simulation duration in seconds
 SIM_TIME_SCALE = 0.001  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
 ## other network/sim properties
 SIM_MAX_CLUSTER_SIZE = None  # max number of nodes in one cluster
 SIM_MESH_ROUTING = True  # use mesh routing with tree fallback
-SIM_NEIGHBOR_TABLE_HOPS = 7  # max hops away stored in neighbor table
+SIM_NEIGHBOR_TABLE_HOPS = 12  # max hops away stored in neighbor table
 SIM_ROUTING_LOGS = True  # output node logs
 SIM_TTL = 32  # time to live for routed packets
 
 ## modes
-SIM_SEND_RANDOM_DATA = True  # nodes send random data packets to other nodes. used to track routing
+SIM_SEND_RANDOM_DATA = False  # nodes send random data packets to other nodes. used to track routing
 SIM_INCLUDE_ROUTERS = True  # (unilaterally) nominate nodes requesting join to CH and turn into Router in between 
 SIM_ROUTER_PROMOTION_COOLDOWN = 360  # time units to prevent router promotion after becoming router
 SIM_ENERGY_LOSS = False  # enable loss of node energy when sending a packet
 SIM_INITIAL_ENERGY = 1000  # initial energy of nodes
-SIM_PACKET_LOSS_RATE = 0.00  # self-explanatory
+SIM_PACKET_LOSS_RATE = 0.05  # self-explanatory
 SIM_KILL_NODES = False  # kill a random selection of nodes
 SIM_KILL_TIME = 700  # time to kill nodes
 SIM_NODES_TO_KILL = 16  # number of nodes to kill

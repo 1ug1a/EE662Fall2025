@@ -566,7 +566,7 @@ class SensorNode(wsn.Node):
                     print("Average rejoin time: %s s" % AVG_REJOIN_TIME)
 
                     AVG_PACKET_DELAY = sum(DATA_PACKET_DELAYS) / len(DATA_PACKET_DELAYS) if len(DATA_PACKET_DELAYS) > 0 else 0
-                    print("Average data packet delay: %s s" % AVG_PACKET_DELAY)
+                    print("Average data packet delay: %s μs" % AVG_PACKET_DELAY)
 
                     print("Unicast packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
                     print("Role counts:")
@@ -577,7 +577,7 @@ class SensorNode(wsn.Node):
                     # are the ones that are still connected to the root.
                     CONNECTED_NODES = sum([count for role, count in ROLE_COUNTS.items() if role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.OFF]])
                     DISCONNECTED_NODES = config.SIM_NODE_COUNT - CONNECTED_NODES - config.SIM_NODES_TO_KILL
-                    print("Number of disconnected active nodes: %s" % DISCONNECTED_NODES)
+                    print("Number of disconnected active nodes: %s" % (DISCONNECTED_NODES if config.SIM_KILL_NODES == True else 0))
 
     ############
     # Receives #
@@ -859,7 +859,7 @@ class SensorNode(wsn.Node):
                     PACKET_METRICS['delivered'] += 1
                     TIME_TAKEN_US = 1000000*(self.now-pck['created'])
                     DATA_PACKET_DELAYS.append(TIME_TAKEN_US)
-                    self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), TIME_TAKEN))
+                    self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), TIME_TAKEN_US))
         else:
             if self.addr is not None:
                 if pck['type'] == "CLUSTER_ALIVE":
