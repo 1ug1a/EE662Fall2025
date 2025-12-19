@@ -268,7 +268,8 @@ class Node:
            Returns:
 
         """
-        self.active_timer_list = []
+        # don't kill TIMER_DEBUG_END
+        self.active_timer_list = [t for t in self.active_timer_list if t == 'TIMER_DEBUG_END']
 
     ############################
     def delayed_exec(self, delay, func, *args, **kwargs):

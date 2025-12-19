@@ -32,6 +32,7 @@ ACTIVE_ADDRS = []
 ADDR_NODE_KEY = {}
 ROLE_COUNTS = Counter()
 JOIN_TIMES = []
+REJOIN_TIMES = []
 PACKET_METRICS = {'sent': 0, 'delivered': 0}
 
 '''
@@ -86,6 +87,8 @@ class SensorNode(wsn.Node):
         # tables and trackers
         self.activation_timestamp = None
         self.join_timestamp = None
+        self.orphan_timestamp = None
+        self.rejoin_timestamp = None
         self.energy_mAh = 21600
         self.poisoned_addr = None
         self.router_promotable = False
@@ -533,6 +536,12 @@ class SensorNode(wsn.Node):
                     join_time = self.join_timestamp - self.activation_timestamp
                     #print("Node %s join time: %s s" % (self.id, join_time))
                     JOIN_TIMES.append(join_time)
+                #print("Node %s orphan timestamp: %s s" % (self.id, self.orphan_timestamp))
+                #print("Node %s rejoin timestamp: %s s" % (self.id, self.rejoin_timestamp))
+                if self.id != ROOT_ID and self.rejoin_timestamp is not None and self.orphan_timestamp is not None:
+                    rejoin_time = self.rejoin_timestamp - self.orphan_timestamp
+                    #print("Node %s rejoin time: %s s" % (self.id, rejoin_time))
+                    REJOIN_TIMES.append(rejoin_time)
                 # highest GUI node writes the output files
                 highest_gui = max(ADDR_NODE_KEY.values()) if len(ADDR_NODE_KEY) > 0 else -1
                 if self.id == highest_gui:
@@ -548,7 +557,13 @@ class SensorNode(wsn.Node):
                     AVG_JOIN_TIME = sum(JOIN_TIMES) / len(JOIN_TIMES) if len(JOIN_TIMES) > 0 else 0
                     print("###########################################")
                     #pprint(JOIN_TIMES)
+                    # join times are weird because they also get reset when a node rejoins
                     print("Average join time: %s s" % AVG_JOIN_TIME)
+
+                    #pprint(REJOIN_TIMES)
+                    AVG_REJOIN_TIME = sum(REJOIN_TIMES) / len(REJOIN_TIMES) if len(REJOIN_TIMES) > 0 else 0
+                    print("Average rejoin time: %s s" % AVG_REJOIN_TIME)
+
                     print("Unicast packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
                     print("Role counts:")
                     for role, count in ROLE_COUNTS.items():
@@ -690,6 +705,8 @@ class SensorNode(wsn.Node):
                             self.send_heartbeat()
                             self.share_neighbors()
                             self.join_timestamp = self.now
+                            if self.now >= config.SIM_KILL_TIME:
+                                self.rejoin_timestamp = self.now
                             self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
                             if self.ch_addr is not None:
                                 self.set_role(Roles.CLUSTER_HEAD)
@@ -808,6 +825,8 @@ class SensorNode(wsn.Node):
                             ADDR_NODE_KEY[(self.ch_addr.net_addr, self.ch_addr.node_addr)] = self.id
                             self.draw_parent()
                             self.join_timestamp = self.now
+                            if self.now >= config.SIM_KILL_TIME:
+                                self.rejoin_timestamp = self.now
                             self.send_heartbeat()
                             self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
                             self.share_neighbors()
@@ -823,11 +842,13 @@ class SensorNode(wsn.Node):
                             if 'ch_addr' in self.neighbors[self.parent_gui]:
                                 if self.neighbors[self.parent_gui]['ch_addr'] is not None:
                                     if pck['source'] == self.neighbors[self.parent_gui]['ch_addr']:
+                                        self.orphan_timestamp = self.now
                                         self.repair()
                                         return
                             if 'addr' in self.neighbors[self.parent_gui]:
                                 if self.neighbors[self.parent_gui]['addr'] is not None:
                                     if pck['source'] == self.neighbors[self.parent_gui]['addr']:
+                                        self.orphan_timestamp = self.now
                                         self.repair()
 
                 case 'DATA':
@@ -958,6 +979,7 @@ class SensorNode(wsn.Node):
         if self.role != Roles.UNREGISTERED:
             if parent_dead:
                 #self.log("Parent lost. Repair imminent.")
+                self.orphan_timestamp = self.now
                 self.repair()
             else:
                 self.send_heartbeat()
