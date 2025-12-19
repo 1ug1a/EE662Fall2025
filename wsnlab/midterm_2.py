@@ -21,7 +21,7 @@ with open('EE662output.txt', 'w') as f:
     print("Using random seed: ", config.SIM_RANDOM_SEED)
     print("###########################################")
 
-ROOT_ID = RNG.randint(0, config.SIM_NODE_COUNT)
+ROOT_ID = RNG.randint(0, config.SIM_NODE_COUNT-1)
 NODE_IDS_WITHOUT_ROOT = list(range(config.SIM_NODE_COUNT))
 NODE_IDS_WITHOUT_ROOT.remove(ROOT_ID)
 NODES_TO_KILL = RNG.sample(NODE_IDS_WITHOUT_ROOT, config.SIM_NODES_TO_KILL)
@@ -35,59 +35,9 @@ JOIN_TIMES = []
 PACKET_METRICS = {'sent': 0, 'delivered': 0}
 
 '''
-Midterm 2 - Elpy Perez
-
-Implementation Status (not up-to-date):
-0. Overall Changes (compared to previously provided code)
-    - Complete reorganizion
-    - Addressing changed to match design: counting from 1 onwards
-    - Network and node availability taken into account.
-        - New cluster tracking table for root.
-            - If hasn't recieved CLUSTER_ALIVE packet from CH after a while...
-            - ...Removes lease on that address.
-            - Chooses smallest available network address.
-        - Node availability only tracked using a simple list of booleans for each node address index.
-    - Standardized random number generator.
-        - You can now specify a seed to get repeatable simulations for testing.
-1. Neighbor Tables
-    - Added NEIGHBOR_SHARE packet for multi-hop.
-        - It sends a copy of the node's neighbor table making sure to increment hops away.
-2. Clusterhead Tables (Child Net/Members)
-    - Child net table is now known as "descendants".
-    - Mostly unchanged aside from organizational stuff.
-3. Routing
-    - Implemented according to rules set in design document
-    - Includes multi-hop routing via next hop, route poisioning to avoid loops
-    - Added DATA packet to inspect mesh-tree routing.
-    - Added TTL parameter.
-4. Config Parameters
-    - Max cluster size paramenter working nominally.
-    - Tx power able to be adjusted but not able to respond to conditions.
-    - Packet loss parameter added, relevant important packets get re-sent.
-5. Routers
-    - Router mode implemented.
-    - Added NOMINATION packet to promote joining node to CH w/ address from NETWORK_RESPONSE
-    - Node that sends NOMINATION packet turns into a router, can only interact with other routers and CHs
-    - Choice of node to nominate only chooses based on farthest distance. Not optimal.
-    - check_neighbors() does not work correctly because somehow parents are sometimes not in a node's neighbors table.
-6. Recovery
-    - Added config.SIM_KILL_NODES to toggle randomly killing nodes at t = 600 s.
-    - ALL_ORPHAN fully repairs (without routers included).
-    - FIND_ANOTHER_PARENT seems to partially work. It does find some new parents.
-        - But various combinations of factors make things fail overall.
-7. Maintenance/Optimization
-    - No reorganization other than when performing repairs yet.
-8. Energy Model
-    - Rudimentary energy loss system is in place.
-    - Currently, a small random amount of a node's energy is lost when sending any packet.
-    - If it reaches a threshold, it powers off (and triggers repair!).
-'''
-
-'''
-Current observations:
-    - Some loops are caused by out-of-date neighbor tables.
-        - It makes network requests/responses take a full retry to get through sometimes.
-    - There are some issues with stray routers and CHs with no members.
+Some notes on known issues and behaviors:
+    - Some routing loops are caused by out-of-date neighbor tables.
+        - This makes network requests/responses take a full retry to get through sometimes.
 '''
 
 ###########################################################
@@ -134,8 +84,8 @@ class SensorNode(wsn.Node):
         self.logging = config.LOGGING
 
         # tables and trackers
-        self.activation_time = None
-        self.join_time = None
+        self.activation_timestamp = None
+        self.join_timestamp = None
         self.energy_mAh = 21600
         self.poisoned_addr = None
         self.router_promotable = False
@@ -492,7 +442,7 @@ class SensorNode(wsn.Node):
                 # self.log("👋 Activated.")
                 self.wake_up()
                 self.set_role(Roles.UNDISCOVERED)
-                self.activation_time = self.now
+                self.activation_timestamp = self.now
                 self.set_timer('TIMER_PROBE', 1)
 
             case 'TIMER_DIE':
@@ -515,7 +465,6 @@ class SensorNode(wsn.Node):
                         self.addr = wsn.Addr(1, 254) 
                         self.ch_addr = wsn.Addr(1, 254)
                         ADDR_NODE_KEY[(self.addr.net_addr, self.addr.node_addr)] = self.id
-                        self.join_time = self.now
                         self.root_addr = self.addr
                         self.hops_to_root = 0
                         self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
@@ -579,10 +528,14 @@ class SensorNode(wsn.Node):
 
             # debug logs at the end
             case 'TIMER_DEBUG_END':
-                #self.log("A: %s / J: %s" % (self.activation_time, self.join_time))
-                if self.id != ROOT_ID and self.join_time is not None:
-                    JOIN_TIMES.append(self.join_time)
-                if self.id == ROOT_ID:
+                #self.log("A: %s / J: %s" % (self.activation_timestamp, self.join_timestamp))
+                if self.id != ROOT_ID and self.join_timestamp is not None and self.activation_timestamp is not None:
+                    join_time = self.join_timestamp - self.activation_timestamp
+                    #print("Node %s join time: %s s" % (self.id, join_time))
+                    JOIN_TIMES.append(join_time)
+                # highest GUI node writes the output files
+                highest_gui = max(ADDR_NODE_KEY.values()) if len(ADDR_NODE_KEY) > 0 else -1
+                if self.id == highest_gui:
                     #pprint(ADDR_NODE_KEY)
                     SORTED_ADDR_NODE_KEY = dict(sorted(ADDR_NODE_KEY.items()))
                     with open('ADDR_NODE_KEY.txt', 'w') as f:
@@ -592,8 +545,9 @@ class SensorNode(wsn.Node):
                         for addr in SORTED_ADDR_NODE_KEY.keys():
                             f.write(f"{addr}" + '\n')
 
-                    AVG_JOIN_TIME = sum(JOIN_TIMES) / (config.SIM_NODE_COUNT - 1)
+                    AVG_JOIN_TIME = sum(JOIN_TIMES) / len(JOIN_TIMES) if len(JOIN_TIMES) > 0 else 0
                     print("###########################################")
+                    #pprint(JOIN_TIMES)
                     print("Average join time: %s s" % AVG_JOIN_TIME)
                     print("Unicast packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
                     print("Role counts:")
@@ -729,7 +683,7 @@ class SensorNode(wsn.Node):
                             self.send_join_ack(pck['source'])
                             self.send_heartbeat()
                             self.share_neighbors()
-                            self.join_time = self.now
+                            self.join_timestamp = self.now
                             self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
                             if self.ch_addr is not None:
                                 self.set_role(Roles.CLUSTER_HEAD)
@@ -763,7 +717,7 @@ class SensorNode(wsn.Node):
                 
                 case 'NETWORK_RESPONSE':
                     PACKET_METRICS['delivered'] += 1
-                    if self.role == Roles.REGISTERED:
+                    if self.role in [Roles.REGISTERED, Roles.ROUTER]:
                         # either promote self to CH, or select and nominate a downstream node to become CH
                         if config.SIM_INCLUDE_ROUTERS:
                             self.kill_timer('TIMER_NETWORK_REQUEST')
@@ -790,7 +744,8 @@ class SensorNode(wsn.Node):
                                     self.node_vacancies[chosen_node_addr] = True
                                 else:
                                     self.send_join_response(gui, 'REJECT')
-                    elif self.role == Roles.ROUTER:
+                    # only just realized i could do the nomination for routers too.
+                    '''elif self.role == Roles.ROUTER:
                         self.set_role(Roles.CLUSTER_HEAD)
                         self.kill_timer('TIMER_NETWORK_REQUEST')
                         self.log("🚀 %s: Received NETWORK_RESPONSE. Promoting to CLUSTER_HEAD with address %s" % (str(self.addr), str(pck['addr'])))
@@ -809,7 +764,7 @@ class SensorNode(wsn.Node):
                                 self.node_vacancies[chosen_node_addr] = True
                             else:
                                 self.send_join_response(gui, 'REJECT')
-                        pass
+                        pass'''
                 
                 case 'NETWORK_UPDATE':
                     PACKET_METRICS['delivered'] += 1
@@ -846,7 +801,7 @@ class SensorNode(wsn.Node):
                             self.kill_timer('TIMER_JOIN_REQUEST_SEND')
                             ADDR_NODE_KEY[(self.ch_addr.net_addr, self.ch_addr.node_addr)] = self.id
                             self.draw_parent()
-                            self.join_time = self.now
+                            self.join_timestamp = self.now
                             self.send_heartbeat()
                             self.set_timer('TIMER_HEARTBEAT', config.HEARTBEAT_INTERVAL)
                             self.share_neighbors()
