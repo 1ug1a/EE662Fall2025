@@ -33,6 +33,7 @@ ADDR_NODE_KEY = {}
 ROLE_COUNTS = Counter()
 JOIN_TIMES = []
 REJOIN_TIMES = []
+DATA_PACKET_DELAYS = []
 PACKET_METRICS = {'sent': 0, 'delivered': 0}
 
 '''
@@ -564,6 +565,9 @@ class SensorNode(wsn.Node):
                     AVG_REJOIN_TIME = sum(REJOIN_TIMES) / len(REJOIN_TIMES) if len(REJOIN_TIMES) > 0 else 0
                     print("Average rejoin time: %s s" % AVG_REJOIN_TIME)
 
+                    AVG_PACKET_DELAY = sum(DATA_PACKET_DELAYS) / len(DATA_PACKET_DELAYS) if len(DATA_PACKET_DELAYS) > 0 else 0
+                    print("Average data packet delay: %s s" % AVG_PACKET_DELAY)
+
                     print("Unicast packets sent/delivered: %s / %s" % (PACKET_METRICS['sent'], PACKET_METRICS['delivered']))
                     print("Role counts:")
                     for role, count in ROLE_COUNTS.items():
@@ -853,7 +857,9 @@ class SensorNode(wsn.Node):
 
                 case 'DATA':
                     PACKET_METRICS['delivered'] += 1
-                    self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), 1000000*(self.now-pck['created'])))
+                    TIME_TAKEN_US = 1000000*(self.now-pck['created'])
+                    DATA_PACKET_DELAYS.append(TIME_TAKEN_US)
+                    self.log("📬 %s: Received DATA (%s) from %s. Time taken: %.0f μs" % (str(self.addr), str(pck['payload']), str(pck['source']), TIME_TAKEN))
         else:
             if self.addr is not None:
                 if pck['type'] == "CLUSTER_ALIVE":
