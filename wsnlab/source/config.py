@@ -16,9 +16,9 @@ SIM_TITLE = 'Cluster-Tree Mesh Network'  # title of visualization window
 SIM_TERRAIN_SIZE = (850, 800)  #terrain size
 SIM_SCALE = 1  # scale factor for visualization
 SIM_RANDOM_SEED = None  # random seed across the entire simulation
-SIM_NODE_COUNT = 200  # node count in simulation
+SIM_NODE_COUNT = 100  # node count in simulation
 SIM_NODE_PLACING_CELL_SIZE = 75  # cell size to place one node
-SIM_DURATION = 1200  # simulation duration in seconds
+SIM_DURATION = 910  # simulation duration in seconds
 SIM_TIME_SCALE = 0.001  #  The real time duration of 1 second simualtion time
 SIM_FAST_ROOT = True  # root node is activated faster than other nodes
 
@@ -36,9 +36,9 @@ SIM_ROUTER_PROMOTION_COOLDOWN = 360  # time units to prevent router promotion af
 SIM_ENERGY_LOSS = False  # enable loss of node energy when sending a packet
 SIM_INITIAL_ENERGY = 1000  # initial energy of nodes
 SIM_PACKET_LOSS_RATE = 0.00  # self-explanatory
-SIM_KILL_NODES = False  # kill a random selection of nodes
+SIM_KILL_NODES = True  # kill a random selection of nodes
 SIM_KILL_TIME = 700  # time to kill nodes
-SIM_NODES_TO_KILL = 15  # number of nodes to kill
+SIM_NODES_TO_KILL = 16  # number of nodes to kill
 REPAIRING_METHOD = 'ALL_ORPHAN' # 'ALL_ORPHAN', 'FIND_ANOTHER_PARENT'
 
 ## application properties

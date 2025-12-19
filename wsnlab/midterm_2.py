@@ -553,6 +553,12 @@ class SensorNode(wsn.Node):
                     print("Role counts:")
                     for role, count in ROLE_COUNTS.items():
                         print("- %s: %s" % (role.name, count))
+                    # for node failure connectivity we assume (after quick testing)
+                    # that the only non-unregistered nodes after orphan notices settle
+                    # are the ones that are still connected to the root.
+                    CONNECTED_NODES = sum([count for role, count in ROLE_COUNTS.items() if role not in [Roles.UNDISCOVERED, Roles.UNREGISTERED, Roles.OFF]])
+                    DISCONNECTED_NODES = config.SIM_NODE_COUNT - CONNECTED_NODES - config.SIM_NODES_TO_KILL
+                    print("Number of disconnected active nodes: %s" % DISCONNECTED_NODES)
 
     ############
     # Receives #
